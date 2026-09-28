@@ -454,6 +454,17 @@ var allowedHeaders = map[string]bool{
 	"x-claude-code-prompt-id":                   true,
 	"x-anthropic-additional-protection":         true,
 	"x-client-request-id":                       true,
+	"x-client-app":                              true,
+	"x-claude-remote-container-id":              true,
+	"x-claude-remote-session-id":                true,
+	"anthropic-client-platform":                 true,
+	"anthropic-client-version":                  true,
+	"x-cc-fallback-category":                    true,
+	"x-cc-fallback-from-model":                  true,
+	"x-cc-fallback-latched-by":                  true,
+	"x-cc-fallback-trigger":                     true,
+	"x-cc-original-request-id":                  true,
+	"x-is-refusal-fallback":                     true,
 }
 
 var claudeCodeOptionalHeaders = map[string]bool{
@@ -463,6 +474,17 @@ var claudeCodeOptionalHeaders = map[string]bool{
 	"x-claude-code-agent-type":          true,
 	"x-claude-code-prompt-id":           true,
 	"x-anthropic-additional-protection": true,
+	"x-client-app":                      true,
+	"x-claude-remote-container-id":      true,
+	"x-claude-remote-session-id":        true,
+	"anthropic-client-platform":         true,
+	"anthropic-client-version":          true,
+	"x-cc-fallback-category":            true,
+	"x-cc-fallback-from-model":          true,
+	"x-cc-fallback-latched-by":          true,
+	"x-cc-fallback-trigger":             true,
+	"x-cc-original-request-id":          true,
+	"x-is-refusal-fallback":             true,
 }
 
 // ErrStickySessionNotFound is returned by GatewayCache.GetSessionAccountID

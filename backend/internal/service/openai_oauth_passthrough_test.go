@@ -2158,30 +2158,7 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPTransformedHeaderBodyParityAnd
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
 
-	seed, ok := codexFingerprintSeed(account.Extra)
-	require.True(t, ok)
-	wantInstall := resolveConvergedInstallationID(account, seed)
-	wantSession := resolveConvergedSessionID(seed)
-	wantThread := resolveConvergedThreadID(seed, "header-session")
-
-	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session_id"))
-	require.Equal(t, wantThread, upstream.lastReq.Header.Get("thread-id"))
-	require.Equal(t, wantThread, upstream.lastReq.Header.Get("x-client-request-id"))
-	require.Equal(t, wantThread+":0", upstream.lastReq.Header.Get("x-codex-window-id"))
-
-	require.Equal(t, wantSession, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
-	require.Equal(t, wantInstall, gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").String())
-	require.Equal(t, wantSession, gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
-	require.Equal(t, wantThread, gjson.GetBytes(upstream.lastBody, "client_metadata.thread_id").String())
-	require.Equal(t, wantThread+":0", gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-window-id").String())
-
-	bodyTurnMetadata := gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-turn-metadata").String()
-	headerTurnMetadata := upstream.lastReq.Header.Get("x-codex-turn-metadata")
-	require.Equal(t, wantSession, gjson.Get(bodyTurnMetadata, "session_id").String())
-	require.Equal(t, wantSession, gjson.Get(headerTurnMetadata, "session_id").String())
-	require.Equal(t, gjson.Get(bodyTurnMetadata, "turn_id").String(), gjson.Get(headerTurnMetadata, "turn_id").String())
+	requireCodexDistinctThreadMetadata(t, upstream.lastReq.Header, upstream.lastBody)
 }
 
 func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParityAndDefaultCacheKey(t *testing.T) {
@@ -2220,30 +2197,7 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
 
-	seed, ok := codexFingerprintSeed(account.Extra)
-	require.True(t, ok)
-	wantInstall := resolveConvergedInstallationID(account, seed)
-	wantSession := resolveConvergedSessionID(seed)
-	wantThread := resolveConvergedThreadID(seed, "header-session")
-
-	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session_id"))
-	require.Equal(t, wantThread, upstream.lastReq.Header.Get("thread-id"))
-	require.Equal(t, wantThread, upstream.lastReq.Header.Get("x-client-request-id"))
-	require.Equal(t, wantThread+":0", upstream.lastReq.Header.Get("x-codex-window-id"))
-
-	require.Equal(t, wantSession, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
-	require.Equal(t, wantInstall, gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").String())
-	require.Equal(t, wantSession, gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
-	require.Equal(t, wantThread, gjson.GetBytes(upstream.lastBody, "client_metadata.thread_id").String())
-	require.Equal(t, wantThread+":0", gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-window-id").String())
-
-	bodyTurnMetadata := gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-turn-metadata").String()
-	headerTurnMetadata := upstream.lastReq.Header.Get("x-codex-turn-metadata")
-	require.Equal(t, wantSession, gjson.Get(bodyTurnMetadata, "session_id").String())
-	require.Equal(t, wantSession, gjson.Get(headerTurnMetadata, "session_id").String())
-	require.Equal(t, gjson.Get(bodyTurnMetadata, "turn_id").String(), gjson.Get(headerTurnMetadata, "turn_id").String())
+	requireCodexDistinctThreadMetadata(t, upstream.lastReq.Header, upstream.lastBody)
 }
 
 func TestOpenAIGatewayService_CodexFingerprintCompactDoesNotRewriteBodyCacheKeyOrMetadata(t *testing.T) {

@@ -313,7 +313,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
-		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" {
+		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" &&
+			(!account.IsOpenAIOAuthLike() || (turn == 1 && !gjson.GetBytes(normalized, "client_metadata."+openAIWSTurnMetadataHeader).Exists())) {
 			next, setErr := applyPayloadMutation(normalized, "client_metadata."+openAIWSTurnMetadataHeader, turnMetadata)
 			if setErr != nil {
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
@@ -327,6 +328,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		if accountScoped {
 			normalized = accountScopedPayload
+		}
+		if account.IsOpenAIOAuthLike() {
+			ids := resolveCodexFingerprintIDsForCaller(account, c.Request.Header, getAPIKeyIDFromContext(c))
+			fingerprintBody, _, fingerprintErr := applyCodexFingerprintClientMetadataRaw(normalized, ids)
+			if fingerprintErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket identity metadata", fingerprintErr)
+			}
+			stageCodexFingerprintIDs(c, ids)
+			metadataBody, _, metadataErr := normalizeCodexRequestMetadata(fingerprintBody, nil, account, false)
+			if metadataErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket identity metadata", metadataErr)
+			}
+			normalized = metadataBody
 		}
 		if responsesLite {
 			litePayload, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(normalized, account)
@@ -545,7 +559,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			// inherit another connection's native WS turn state or socket binding.
 			return
 		}
-		if turnState == "" && stateStore != nil && sessionHash != "" {
+		if !account.IsOpenAIOAuthLike() && turnState == "" && stateStore != nil && sessionHash != "" {
 			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 				turnState = savedTurnState
 			}
@@ -789,13 +803,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if buildHdrErr != nil {
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
+	if metadataBody, metadataChanged, metadataErr := normalizeCodexRequestMetadata(firstPayload.payloadRaw, wsHeaders, account, false); metadataErr != nil {
+		return fmt.Errorf("normalize websocket handshake metadata: %w", metadataErr)
+	} else if metadataChanged {
+		firstPayload.payloadRaw = metadataBody
+		firstPayload.payloadBytes = len(metadataBody)
+	}
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account:          account,
 		WSURL:            wsURL,
 		Headers:          wsHeaders,
 		ObserveHandshake: s.codexTicketHandshakeObserver(ctx, ticket),
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
-			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+			return s.refreshOpenAIWSAuthHeaders(factoryCtx, account, headers)
 		},
 		ProxyURL: func() string {
 			if account.ProxyID != nil && account.Proxy != nil {
@@ -870,7 +890,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		// 上游读写失败后的重试同样新建，避免再拿到同批陈旧的空闲连接。
 		req.ForceNewConn = dedicatedMode || forceNewConn
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
-		lease, acquireErr := pool.Acquire(acquireCtx, req)
+		lease, acquireErr := s.acquireOpenAIWSWithAuthRecovery(acquireCtx, pool, &req)
+		baseAcquireReq.Headers = req.Headers
 		acquireCancel()
 		var dialErr *openAIWSDialError
 		if acquireErr != nil && s.isAgentIdentityAccount(ctx, account) && errors.As(acquireErr, &dialErr) && isAgentIdentityTaskInvalidWSDialError(dialErr) && !agentTaskRecoveryTried {

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -235,7 +237,7 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		RefreshToken: tokenResp.RefreshToken,
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ExpiresAt:    openAIRefreshedTokenExpiresAt(tokenResp.AccessToken, tokenResp.ExpiresIn),
 	}
 	if trimmed := strings.TrimSpace(clientID); trimmed != "" {
 		tokenInfo.ClientID = trimmed
@@ -252,6 +254,33 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 	s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
 
 	return tokenInfo, nil
+}
+
+// JWT claims are used only as a refresh scheduling hint, never as proof of
+// identity. Official refresh responses need not include expires_in.
+func openAIRefreshedTokenExpiresAt(accessToken string, expiresIn int64) int64 {
+	parts := strings.Split(accessToken, ".")
+	if len(parts) == 3 {
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		var claims struct {
+			ExpiresAt int64 `json:"exp"`
+		}
+		if err == nil && json.Unmarshal(payload, &claims) == nil && claims.ExpiresAt > 0 {
+			return claims.ExpiresAt
+		}
+	}
+	if expiresIn > 0 {
+		return time.Now().Unix() + expiresIn
+	}
+	return 0
+}
+
+func openAIAccessTokenExpiresAt(account *Account) *time.Time {
+	if expiresAt := openAIRefreshedTokenExpiresAt(account.GetOpenAIAccessToken(), 0); expiresAt > 0 {
+		expiry := time.Unix(expiresAt, 0)
+		return &expiry
+	}
+	return account.GetCredentialAsTime("expires_at")
 }
 
 // enrichTokenInfo 通过 ChatGPT backend-api 补全 tokenInfo 并设置隐私（best-effort）。
@@ -391,8 +420,9 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 
 // BuildAccountCredentials builds credentials map from token info
 func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo) map[string]any {
-	creds := map[string]any{
-		"access_token": tokenInfo.AccessToken,
+	creds := make(map[string]any)
+	if strings.TrimSpace(tokenInfo.AccessToken) != "" {
+		creds["access_token"] = tokenInfo.AccessToken
 	}
 	if tokenInfo.ExpiresAt > 0 {
 		creds["expires_at"] = time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)

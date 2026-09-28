@@ -137,6 +137,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 ) (*OpenAIForwardResult, error) {
 	requestedModel := reqModel
 	upstreamPassthroughModel := ""
+	responsesLite := account != nil && account.IsOpenAI() &&
+		(isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) || isOpenAIResponsesLiteWebSocketPayload(body))
 	if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := s.resolveOpenAICompactFallbackModel(account, reqModel)
 		if compactMappedModel != "" && compactMappedModel != reqModel {
@@ -151,7 +153,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	if account != nil && account.UsesOpenAICodexProtocol() {
-		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
+		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); !responsesLite && rejectReason != "" {
 			rejectMsg := "OpenAI codex passthrough requires a non-empty instructions field"
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			logOpenAIPassthroughInstructionsRejected(ctx, c, account, reqModel, rejectReason, body)
@@ -163,7 +165,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			})
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
-		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
+		if !responsesLite && isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
 			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
 			if setErr != nil {
 				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
@@ -198,7 +200,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			if c != nil && c.Request != nil {
 				clientHeaders = c.Request.Header
 			}
-			fpIDs := resolveCodexFingerprintIDsFromRequest(account, clientHeaders)
+			fpIDs := resolveCodexFingerprintIDsForCaller(account, clientHeaders, getAPIKeyIDFromContext(c))
 			if fpIDs != nil {
 				fpBody, fpChanged, fpErr := applyCodexFingerprintClientMetadataRaw(body, fpIDs)
 				if fpErr != nil {
@@ -212,13 +214,21 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 	}
 	if account != nil && account.IsOpenAI() {
-		responsesLite := isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) || isOpenAIResponsesLiteWebSocketPayload(body)
 		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(body, account, responsesLite)
 		if normalizeErr != nil {
 			return nil, fmt.Errorf("normalize passthrough Responses compatibility: %w", normalizeErr)
 		}
 		if normalized {
 			body = normalizedBody
+		}
+		if responsesLite {
+			liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(body, account)
+			if liteErr != nil {
+				return nil, fmt.Errorf("normalize passthrough Responses Lite request: %w", liteErr)
+			}
+			if changed {
+				body = liteBody
+			}
 		}
 		if account.IsOpenAIOAuthLike() {
 			aliasedBody, reverse, aliased, aliasErr := aliasOpenAIOAuthReservedToolNamesBody(body)
@@ -440,8 +450,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		// x-codex-turn-state 溯源：下游回传由 writeOpenAIPassthroughResponseHeaders
 		// 在各 handler 的写头点强制放行，铸造账号在此统一记录，供出站守卫剥离
 		// failover 换号后的跨账号回带（openai_codex_turn_state.go）。
-		if extractOpenAICodexTurnState(resp.Header) != "" {
-			s.noteOpenAICodexTurnStateProvenance(c, account)
+		if state := extractOpenAICodexTurnState(resp.Header); state != "" {
+			s.noteOpenAICodexTurnStateProvenance(c, account, state)
 		}
 
 		if reqStream {
@@ -674,7 +684,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			if clientSessionID == "" {
 				clientSessionID = resolveOpenAICompactSessionID(c)
 			}
-		} else if req.Header.Get("accept") == "" {
+		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
 		if req.Header.Get("originator") == "" {
@@ -737,6 +747,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http_passthrough", req.Header, body, "not_applicable")
 
+	body, err = applyCodexRequestMetadata(req, body, account, isOpenAIResponsesCompactPath(c))
+	if err != nil {
+		return nil, err
+	}
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}

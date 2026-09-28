@@ -11,6 +11,7 @@ import (
 
 	"github.com/MACOS-DO/sub4api/internal/config"
 	infraerrors "github.com/MACOS-DO/sub4api/internal/pkg/errors"
+	"github.com/MACOS-DO/sub4api/internal/pkg/openai"
 	"github.com/MACOS-DO/sub4api/internal/util/logredact"
 )
 
@@ -1389,6 +1390,10 @@ func isSharedProviderRefreshError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var openAIError *openai.RefreshTokenError
+	if errors.As(err, &openAIError) {
+		return !openAIError.Permanent && (openAIError.Code == "invalid_client" || openAIError.Code == "unauthorized_client" || openAIError.Code == "invalid_scope")
+	}
 	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
 		"invalid_client",
@@ -1409,6 +1414,10 @@ func isSharedProviderRefreshError(err error) bool {
 func isNonRetryableRefreshError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var openAIError *openai.RefreshTokenError
+	if errors.As(err, &openAIError) {
+		return openAIError.Permanent
 	}
 	msg := strings.ToLower(err.Error())
 	nonRetryable := []string{

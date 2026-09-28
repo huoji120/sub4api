@@ -4324,6 +4324,7 @@ type openAIWSQueueDialer struct {
 	mu        sync.Mutex
 	conns     []openAIWSClientConn
 	dialCount int
+	handshake http.Header
 }
 
 func (d *openAIWSQueueDialer) Dial(
@@ -4346,7 +4347,7 @@ func (d *openAIWSQueueDialer) Dial(
 	if len(d.conns) > 1 {
 		d.conns = d.conns[1:]
 	}
-	return conn, 0, nil, nil
+	return conn, 0, d.handshake.Clone(), nil
 }
 
 func (d *openAIWSQueueDialer) DialCount() int {

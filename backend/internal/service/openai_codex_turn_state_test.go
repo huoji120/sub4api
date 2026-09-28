@@ -54,7 +54,7 @@ func TestRelayOpenAICodexTurnState_SetsHeaderAndRecordsProvenance(t *testing.T) 
 
 	require.Equal(t, "blob-A", c.Writer.Header().Get("X-Codex-Turn-State"))
 
-	raw, ok := svc.openaiCodexTurnStateOrigins.Load("7\x00sess-relay")
+	raw, ok := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateProvenanceKey(c, "blob-A"))
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
@@ -86,12 +86,12 @@ func TestStageOpenAICodexTurnState_StagedHeaders(t *testing.T) {
 	stageOpenAICodexTurnState(&staged, upstream)
 	require.NotNil(t, staged)
 	require.Equal(t, "blob-B", staged.Get("X-Codex-Turn-State"))
-	_, noted := svc.openaiCodexTurnStateOrigins.Load("9\x00sess-staged")
+	_, noted := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateProvenanceKey(c, "blob-B"))
 	require.False(t, noted, "暂存阶段不得记录溯源：该 attempt 仍可能 failover 丢弃")
 
 	// 真正提交时才记录
 	svc.noteStagedOpenAICodexTurnStateCommitted(c, &Account{ID: 44}, staged)
-	raw, ok := svc.openaiCodexTurnStateOrigins.Load("9\x00sess-staged")
+	raw, ok := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateProvenanceKey(c, "blob-B"))
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
@@ -126,7 +126,7 @@ func TestStagedTurnState_AbandonedAttemptDoesNotPoisonProvenance(t *testing.T) {
 	svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 52}, h)
 	require.Equal(t, "blob-A", h.Get("x-codex-turn-state"))
 
-	raw, ok := svc.openaiCodexTurnStateOrigins.Load("11\x00sess-abandoned")
+	raw, ok := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateProvenanceKey(c, "blob-A"))
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
@@ -189,14 +189,14 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 	t.Run("expired_provenance_passthrough_and_pruned", func(t *testing.T) {
 		svc := &OpenAIGatewayService{}
 		c, _ := newTurnStateTestContext(t, 7, "sess-g4")
-		svc.openaiCodexTurnStateOrigins.Store("7\x00sess-g4", openAICodexTurnStateOrigin{
+		svc.openaiCodexTurnStateOrigins.Store(openAICodexTurnStateProvenanceKey(c, "blob-A"), openAICodexTurnStateOrigin{
 			accountID: 42,
 			expiresAt: time.Now().Add(-time.Minute),
 		})
 		h := newOutbound("blob-A")
 		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
 		require.Equal(t, "blob-A", h.Get("x-codex-turn-state"))
-		_, ok := svc.openaiCodexTurnStateOrigins.Load("7\x00sess-g4")
+		_, ok := svc.openaiCodexTurnStateOrigins.Load(openAICodexTurnStateProvenanceKey(c, "blob-A"))
 		require.False(t, ok)
 	})
 
@@ -215,6 +215,43 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
 		require.Empty(t, h.Get("x-codex-turn-state"))
 	})
+}
+
+func TestGuardOpenAICodexTurnStateEcho_OverlappingTurnsKeepExactProvenance(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	c, _ := newTurnStateTestContext(t, 7, "shared-session")
+	first := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "first"}}
+	second := &Account{ID: 43, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "second"}}
+	for _, response := range []struct {
+		account *Account
+		state   string
+	}{{first, "turn-a"}, {second, "turn-b"}} {
+		h := http.Header{}
+		h.Set(openAICodexTurnStateHeader, response.state)
+		svc.relayOpenAICodexTurnState(c, response.account, h)
+	}
+	for _, tc := range []struct {
+		account *Account
+		state   string
+		want    string
+	}{{first, "turn-a", "turn-a"}, {second, "turn-a", ""}, {second, "turn-b", "turn-b"}, {first, "turn-b", ""}} {
+		h := http.Header{}
+		h.Set(openAICodexTurnStateHeader, tc.state)
+		svc.guardOpenAICodexTurnStateEcho(c, tc.account, h)
+		require.Equal(t, tc.want, h.Get(openAICodexTurnStateHeader))
+	}
+	// A second local row of the same credential is not an account switch.
+	duplicate := *first
+	duplicate.ID = 99
+	h := http.Header{}
+	h.Set(openAICodexTurnStateHeader, "turn-a")
+	svc.guardOpenAICodexTurnStateEcho(c, &duplicate, h)
+	require.Equal(t, "turn-a", h.Get(openAICodexTurnStateHeader))
+	// Another downstream caller cannot poison this caller's token provenance.
+	otherCaller, _ := newTurnStateTestContext(t, 8, "shared-session")
+	svc.relayOpenAICodexTurnState(otherCaller, second, h)
+	svc.guardOpenAICodexTurnStateEcho(c, first, h)
+	require.Equal(t, "turn-a", h.Get(openAICodexTurnStateHeader))
 }
 
 func TestSweepOpenAICodexTurnStateOrigins_PrunesExpiredEntries(t *testing.T) {

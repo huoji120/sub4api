@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -356,7 +357,28 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 	}
 }
 
-// RewriteUserID 重写body中的metadata.user_id
+func rewriteParentSessionID(accountID int64, extraFields map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(extraFields) == 0 {
+		return extraFields
+	}
+	raw, ok := extraFields["parent_session_id"]
+	if !ok {
+		return extraFields
+	}
+	var parentSessionID string
+	if err := json.Unmarshal(raw, &parentSessionID); err != nil || parentSessionID == "" {
+		return extraFields
+	}
+	remapped := make(map[string]json.RawMessage, len(extraFields))
+	for key, value := range extraFields {
+		remapped[key] = value
+	}
+	parent := generateUUIDFromSeed(fmt.Sprintf("%d::%s", accountID, parentSessionID))
+	remapped["parent_session_id"], _ = json.Marshal(parent)
+	return remapped
+}
+
+// RewriteUserID 重写 body 中的 metadata.user_id。
 // 支持旧拼接格式和新 JSON 格式的 user_id 解析，
 // 根据 fingerprintUA 版本选择输出格式。
 //
@@ -389,16 +411,17 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 	if parsed == nil {
 		return body, nil
 	}
+	sessionTail := parsed.SessionID // 原始 session UUID
 
-	sessionTail := parsed.SessionID // 原始session UUID
-
-	// 生成新的session hash: SHA256(accountID::sessionTail) -> UUID格式
-	seed := fmt.Sprintf("%d::%s", accountID, sessionTail)
-	newSessionHash := generateUUIDFromSeed(seed)
+	// Keep parent/child session relationships coherent after account-scoped
+	// session remapping. Only a valid JSON string extension is transformed;
+	// unknown extensions and legacy metadata remain untouched.
+	extraFields := rewriteParentSessionID(accountID, parsed.ExtraFields)
+	newSessionHash := generateUUIDFromSeed(fmt.Sprintf("%d::%s", accountID, sessionTail))
 
 	// 根据客户端版本选择输出格式；保留 JSON user_id 中所有未知扩展字段。
 	version := ExtractCLIVersion(fingerprintUA)
-	newUserID := formatMetadataUserID(cachedClientID, accountUUID, newSessionHash, parsed.ExtraFields, version)
+	newUserID := formatMetadataUserID(cachedClientID, accountUUID, newSessionHash, extraFields, version)
 	if newUserID == userID {
 		return body, nil
 	}

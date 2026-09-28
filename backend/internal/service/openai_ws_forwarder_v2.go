@@ -70,7 +70,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
 	}
-	setOpenAIWSTurnMetadata(payload, turnMetadata)
+	clientMetadata, _ := payload["client_metadata"].(map[string]any)
+	if !account.IsOpenAIOAuthLike() {
+		setOpenAIWSTurnMetadata(payload, turnMetadata)
+	} else if _, exists := clientMetadata[openAIWSTurnMetadataHeader]; !exists && turnMetadata != "" {
+		// The original HTTP header has not yet received account projection.
+		fallback := map[string]any{openAIWSTurnMetadataHeader: turnMetadata}
+		applyCodexAccountIdentityEmbeddedMetadata(fallback, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
+		setOpenAIWSTurnMetadata(payload, fallback[openAIWSTurnMetadataHeader].(string))
+	}
 	applyStagedCodexFingerprintClientMetadata(c, account, payload)
 	previousResponseID := openAIWSPayloadString(payload, "previous_response_id")
 	previousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
@@ -131,7 +139,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if executionScope = strings.TrimSpace(executionScope); executionScope != "" {
 		sessionHash = executionScope
 	}
-	if turnState == "" && stateStore != nil && sessionHash != "" {
+	if !account.IsOpenAIOAuthLike() && turnState == "" && stateStore != nil && sessionHash != "" {
 		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 			turnState = savedTurnState
 		}
@@ -166,6 +174,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	)
 	if buildHdrErr != nil {
 		return nil, fmt.Errorf("build ws headers: %w", buildHdrErr)
+	}
+	if err := normalizeCodexRequestMetadataMap(payload, wsHeaders, account); err != nil {
+		return nil, fmt.Errorf("normalize websocket metadata: %w", err)
 	}
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
@@ -202,13 +213,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
 	defer acquireCancel()
 
-	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
+	acquireRequest := openAIWSAcquireRequest{
 		Account:          account,
 		WSURL:            wsURL,
 		Headers:          wsHeaders,
 		ObserveHandshake: s.codexTicketHandshakeObserver(ctx, ticket),
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
-			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+			return s.refreshOpenAIWSAuthHeaders(factoryCtx, account, headers)
 		},
 		PreferredConnID: preferredConnID,
 		ForceNewConn:    forceNewConn,
@@ -218,7 +229,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 			return ""
 		}(),
-	})
+	}
+	lease, err := s.acquireOpenAIWSWithAuthRecovery(acquireCtx, s.getOpenAIWSConnPool(), &acquireRequest)
 	if err != nil {
 		var agentDialErr *openAIWSDialError
 		if s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {

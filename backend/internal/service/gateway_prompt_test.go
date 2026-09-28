@@ -417,8 +417,8 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 			require.Contains(t, billingBlock["text"], "x-anthropic-billing-header:")
 			require.Contains(t, billingBlock["text"], "cc_version=")
 			require.Contains(t, billingBlock["text"], "cc_entrypoint=cli")
-			// 新版 CLI 已取消 cch=... 签名字段，注入的 billing block 不应再带 cch。
-			require.NotContains(t, billingBlock["text"], "cch=")
+			// Claude Code 2.1.283 first-party billing includes conditional cch.
+			require.Contains(t, billingBlock["text"], "cch=00000;")
 
 			systemBlock, ok := systemArr[1].(map[string]any)
 			require.True(t, ok)

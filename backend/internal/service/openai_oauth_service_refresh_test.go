@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +17,8 @@ import (
 )
 
 type openaiOAuthClientRefreshStub struct {
-	refreshCalls int32
+	refreshCalls  int32
+	tokenResponse *openai.TokenResponse
 }
 
 func (s *openaiOAuthClientRefreshStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -29,6 +32,9 @@ func (s *openaiOAuthClientRefreshStub) RefreshToken(ctx context.Context, refresh
 
 func (s *openaiOAuthClientRefreshStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
 	atomic.AddInt32(&s.refreshCalls, 1)
+	if s.tokenResponse != nil {
+		return s.tokenResponse, nil
+	}
 	return nil, errors.New("not implemented")
 }
 
@@ -191,6 +197,54 @@ func TestOpenAITokenRefresher_Refresh_PATRemovesStaleOAuthFields(t *testing.T) {
 	require.NotContains(t, credentials, "expires_in")
 	require.NotContains(t, credentials, "client_id")
 	require.Equal(t, map[string]any{"gpt-5": "gpt-5-codex"}, credentials["model_mapping"])
+}
+
+func TestOpenAITokenRefresher_RefreshPreservesOmittedCredentials(t *testing.T) {
+	client := &openaiOAuthClientRefreshStub{tokenResponse: &openai.TokenResponse{RefreshToken: "rotated-refresh"}}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	svc.SetPrivacyClientFactory(func(string) (*req.Client, error) { return nil, errors.New("no enrichment in test") })
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"access_token": "retained-access", "refresh_token": "old-refresh",
+		"id_token": "retained-id", "expires_at": expiresAt,
+	}}
+	credentials, err := NewOpenAITokenRefresher(svc, nil).Refresh(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "retained-access", credentials["access_token"])
+	require.Equal(t, "retained-id", credentials["id_token"])
+	require.Equal(t, "rotated-refresh", credentials["refresh_token"])
+	require.Equal(t, expiresAt, credentials["expires_at"])
+}
+
+func TestOpenAIOAuthService_RefreshUsesJWTExpiryWithoutExpiresIn(t *testing.T) {
+	expiresAt := time.Now().Add(time.Hour).Unix()
+	payload, err := json.Marshal(map[string]int64{"exp": expiresAt})
+	require.NoError(t, err)
+	token := "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+	client := &openaiOAuthClientRefreshStub{tokenResponse: &openai.TokenResponse{AccessToken: token}}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	svc.SetPrivacyClientFactory(func(string) (*req.Client, error) { return nil, errors.New("no enrichment in test") })
+	info, err := svc.RefreshToken(context.Background(), "refresh", "")
+	require.NoError(t, err)
+	require.Equal(t, expiresAt, info.ExpiresAt)
+	credentials := svc.BuildAccountCredentials(info)
+	require.Equal(t, time.Unix(expiresAt, 0).Format(time.RFC3339), credentials["expires_at"])
+}
+
+func TestOpenAITokenRefresher_NeedsRefreshUsesJWTExpiry(t *testing.T) {
+	payload, err := json.Marshal(map[string]int64{"exp": time.Now().Add(4 * time.Minute).Unix()})
+	require.NoError(t, err)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"access_token":  "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".signature",
+		"refresh_token": "refresh",
+		"expires_at":    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}}
+	refresher := NewOpenAITokenRefresher(nil, nil)
+	require.True(t, refresher.NeedsRefresh(account, 5*time.Minute), "JWT expiry overrides stale imported metadata")
+	delete(account.Credentials, "expires_at")
+	require.True(t, refresher.NeedsRefresh(account, 5*time.Minute), "imported JWTs do not require expires_at metadata")
 }
 
 func TestOpenAITokenProvider_NoRefreshTokenExpiredAccessTokenReturnsError(t *testing.T) {

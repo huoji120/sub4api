@@ -88,11 +88,11 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_CLIENT_INIT_FAILED", "create HTTP client: %v", err)
 	}
 
-	formData := url.Values{}
-	formData.Set("grant_type", "refresh_token")
-	formData.Set("refresh_token", refreshToken)
-	formData.Set("client_id", clientID)
-	formData.Set("scope", openai.RefreshScopes)
+	refreshRequest := struct {
+		ClientID     string `json:"client_id"`
+		GrantType    string `json:"grant_type"`
+		RefreshToken string `json:"refresh_token"`
+	}{ClientID: clientID, GrantType: "refresh_token", RefreshToken: refreshToken}
 
 	var tokenResp openai.TokenResponse
 
@@ -101,7 +101,8 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 		SetContext(ctx).
 		SetHeader("User-Agent", authUA).
 		SetHeader("originator", authOriginator).
-		SetFormDataFromValues(formData).
+		SetHeader("Content-Type", "application/json").
+		SetBodyJsonMarshal(refreshRequest).
 		SetSuccessResult(&tokenResp).
 		Post(s.tokenURL)
 
@@ -113,7 +114,7 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 	}
 
 	if !resp.IsSuccessState() {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", "token refresh failed: status %d, body: %s", resp.StatusCode, resp.String())
+		return nil, openai.NewRefreshTokenError(resp.StatusCode, resp.Bytes())
 	}
 
 	return &tokenResp, nil

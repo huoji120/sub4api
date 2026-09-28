@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MACOS-DO/sub4api/internal/pkg/openai"
 )
 
 // OAuthRefreshExecutor 各平台实现的 OAuth 刷新执行器
@@ -125,10 +127,11 @@ func snapshotOAuthRefreshAccount(account *Account) *Account {
 // OAuthRefreshAPI 统一的 OAuth Token 刷新入口
 // 封装分布式锁、进程内互斥锁、DB 重读、已刷新检查、竞争恢复等通用逻辑
 type OAuthRefreshAPI struct {
-	accountRepo AccountRepository
-	tokenCache  GeminiTokenCache // 可选，nil = 无分布式锁
-	lockTTL     time.Duration
-	localLocks  sync.Map // key: cacheKey string -> value: *contextMutex
+	accountRepo    AccountRepository
+	tokenCache     GeminiTokenCache // 可选，nil = 无分布式锁
+	lockTTL        time.Duration
+	localLocks     sync.Map // key: cacheKey string -> value: *contextMutex
+	openAIFailures sync.Map // account ID -> credential-scoped OpenAI rejection
 }
 
 // NewOAuthRefreshAPI 创建统一刷新 API
@@ -245,6 +248,9 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		}
 		return &OAuthRefreshResult{Account: freshAccount}, nil
 	}
+	if failure := api.openAIRefreshFailure(freshAccount); failure != nil {
+		return &OAuthRefreshResult{Account: snapshotOAuthRefreshAccount(freshAccount)}, failure
+	}
 
 	// 3. 二次检查是否仍需刷新（另一条路径可能已刷新）
 	if !executor.NeedsRefresh(freshAccount, refreshWindow) {
@@ -264,7 +270,9 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	if refreshErr != nil {
 		// 竞争恢复：invalid_grant 可能是另一个 worker 已消费了旧 refresh_token
 		// 重新读取 DB，如果 refresh_token 已更新则说明是竞争，返回成功
-		if isInvalidGrantError(refreshErr) {
+		var openAIError *openai.RefreshTokenError
+		openAIPermanent := freshAccount.Platform == PlatformOpenAI && errors.As(refreshErr, &openAIError) && openAIError.Permanent
+		if isInvalidGrantError(refreshErr) || openAIPermanent {
 			if recoveredAccount, recovered := api.tryRecoverFromRefreshRace(ctx, freshAccount); recovered {
 				if requestPath && recoveredAccount.Platform == PlatformGrok {
 					if eligibilityErr := grokOAuthRequestAccountEligibilityError(recoveredAccount); eligibilityErr != nil {
@@ -279,6 +287,16 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 					Account: recoveredAccount,
 				}, nil
 			}
+		}
+		if openAIPermanent {
+			current, readErr := api.accountRepo.GetByID(ctx, attemptedAccount.ID)
+			if readErr != nil || current == nil {
+				return nil, &oauthRefreshStateUnavailableError{err: errors.New("OpenAI OAuth rejection state could not be reread")}
+			}
+			if current.ID != attemptedAccount.ID || !current.IsActive() || openAIRefreshFingerprint(current) != openAIRefreshFingerprint(attemptedAccount) {
+				return nil, &oauthRefreshStateUnavailableError{err: errOAuthRefreshAccountStateChanged}
+			}
+			api.recordOpenAIRefreshFailure(attemptedAccount, openAIError)
 		}
 		// Preserve the exact account snapshot used by the failed upstream call.
 		// Callers can then conditionally mutate only that credential version and
@@ -421,6 +439,9 @@ func (api *OAuthRefreshAPI) tryRecoverFromRefreshRace(ctx context.Context, usedA
 	}
 	reReadAccount, err := api.accountRepo.GetByID(ctx, usedAccount.ID)
 	if err != nil || reReadAccount == nil {
+		return nil, false
+	}
+	if usedAccount.Platform == PlatformOpenAI && (reReadAccount.ID != usedAccount.ID || !reReadAccount.IsActive() || !canRecoverOpenAIOAuth(reReadAccount) || reReadAccount.GetCredential("chatgpt_account_id") != usedAccount.GetCredential("chatgpt_account_id")) {
 		return nil, false
 	}
 	usedRT := usedAccount.GetCredential("refresh_token")

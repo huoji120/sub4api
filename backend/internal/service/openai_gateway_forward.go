@@ -390,7 +390,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
-	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
+	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses && !responsesLite {
 		markPatchSet("instructions", defaultCodexSynthInstructions(upstreamModel))
 	}
 	if billingModel != requestedModel {
@@ -525,12 +525,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{
 				IsCodexCLI:                          isCodexCLI,
 				IsCompact:                           isCompactRequest,
+				SkipDefaultInstructions:             responsesLite,
 				OmitPromotedSystemMessagesFromInput: omitPromotedSystemMessages,
 			})
 		}
 		if codexResult.Error != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": codexResult.Error.Error()}})
 			return nil, codexResult.Error
+		}
+		if responsesLite {
+			if changed, liteErr := normalizeOpenAIResponsesLiteTools(decoded); liteErr != nil {
+				return nil, fmt.Errorf("normalize transformed Responses Lite request: %w", liteErr)
+			} else if changed {
+				markDecodedModified()
+			}
 		}
 		setCodexToolNameReverse(c, codexResult.ToolNameReverse)
 		if codexResult.Modified {
@@ -557,7 +565,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if c != nil && c.Request != nil {
 				clientHeaders = c.Request.Header
 			}
-			fpIDs := resolveCodexFingerprintIDsFromRequest(account, clientHeaders)
+			fpIDs := resolveCodexFingerprintIDsForCaller(account, clientHeaders, getAPIKeyIDFromContext(c))
 			if fpIDs != nil {
 				if applyCodexFingerprintClientMetadata(decoded, fpIDs) {
 					markDecodedModified()
@@ -1533,6 +1541,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http", req.Header, body, "not_applicable")
 
+	body, err = applyCodexRequestMetadata(req, body, account, isOpenAIResponsesCompactPath(c))
+	if err != nil {
+		return nil, err
+	}
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}

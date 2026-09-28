@@ -8,10 +8,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/MACOS-DO/sub4api/internal/pkg/openai"
+	"github.com/MACOS-DO/sub4api/internal/util/logredact"
 )
 
 const (
-	openAITokenRefreshSkew    = 3 * time.Minute
+	openAITokenRefreshSkew    = 5 * time.Minute
 	openAITokenCacheSkew      = 5 * time.Minute
 	openAILockInitialWait     = 20 * time.Millisecond
 	openAILockMaxWait         = 120 * time.Millisecond
@@ -139,6 +142,24 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
 		return "", errors.New("not an openai oauth account")
 	}
+	if p.refreshAPI != nil {
+		if _, rejected := p.refreshAPI.openAIFailures.Load(account.ID); rejected {
+			if p.accountRepo == nil {
+				return "", errors.New("OpenAI OAuth credential state is unavailable")
+			}
+			latest, err := p.accountRepo.GetByID(ctx, account.ID)
+			if err != nil || latest == nil || latest.ID != account.ID || !latest.IsActive() || !latest.IsOpenAIOAuth() {
+				return "", errors.New("OpenAI OAuth credential state is unavailable")
+			}
+			if failure := p.refreshAPI.openAIRefreshFailure(latest); failure != nil {
+				return "", failure
+			}
+			account = latest
+			if p.tokenCache != nil {
+				_ = p.tokenCache.DeleteAccessToken(ctx, OpenAITokenCacheKey(account))
+			}
+		}
+	}
 
 	cacheKey := OpenAITokenCacheKey(account)
 
@@ -155,8 +176,8 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	slog.Debug("openai_token_cache_miss", "account_id", account.ID)
 
 	// 2) Refresh if needed (pre-expiry skew).
-	expiresAt := account.GetCredentialAsTime("expires_at")
-	needsRefresh := !account.IsOpenAIPersonalAccessToken() && (expiresAt == nil || time.Until(*expiresAt) <= openAITokenRefreshSkew)
+	expiresAt := openAIAccessTokenExpiresAt(account)
+	needsRefresh := !account.IsOpenAIPersonalAccessToken() && !strings.HasPrefix(strings.TrimSpace(account.GetOpenAIAccessToken()), "at-") && (expiresAt == nil || time.Until(*expiresAt) <= openAITokenRefreshSkew)
 	if needsRefresh && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
 		if expiresAt != nil && !time.Now().Before(*expiresAt) {
 			const reason = "openai access_token expired and refresh_token is missing"
@@ -173,12 +194,20 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		p.metrics.refreshRequests.Add(1)
 		p.metrics.touchNow()
 
-		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, openAITokenRefreshSkew)
+		result, err := p.refreshAPI.RefreshIfNeeded(withOAuthRefreshRequestPath(ctx), account, p.executor, openAITokenRefreshSkew)
 		if err != nil {
+			var rejection *openai.RefreshTokenError
+			if errors.As(err, &rejection) && rejection.Permanent {
+				return "", rejection
+			}
+			var stateUnavailable *oauthRefreshStateUnavailableError
+			if errors.As(err, &stateUnavailable) || errors.Is(err, errOAuthRefreshAccountStateChanged) || errors.Is(err, errOAuthRefreshAccountRereadFailed) || ctx.Err() != nil {
+				return "", errors.New("OpenAI OAuth credential state is unavailable")
+			}
 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
 				return "", err
 			}
-			slog.Warn("openai_token_refresh_failed", "account_id", account.ID, "error", err)
+			slog.Warn("openai_token_refresh_failed", "account_id", account.ID, "error", logredact.RedactText(err.Error()))
 			p.metrics.refreshFailure.Add(1)
 			refreshFailed = true
 		} else if result.LockHeld {
@@ -197,10 +226,10 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		} else if result.Refreshed {
 			p.metrics.refreshSuccess.Add(1)
 			account = result.Account
-			expiresAt = account.GetCredentialAsTime("expires_at")
+			expiresAt = openAIAccessTokenExpiresAt(account)
 		} else {
 			account = result.Account
-			expiresAt = account.GetCredentialAsTime("expires_at")
+			expiresAt = openAIAccessTokenExpiresAt(account)
 		}
 	} else if needsRefresh && p.tokenCache != nil {
 		// Backward-compatible test path when refreshAPI is not injected.

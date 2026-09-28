@@ -72,6 +72,46 @@ cd backend && golangci-lint run ./...
 cd frontend && pnpm install
 ```
 
+### OpenAI / Codex 协议兼容性
+
+公共 OpenAI API（API key）与 ChatGPT Codex 后端（OAuth/PAT）不是同一契约。
+行为对照基线为 `openai/codex` 提交 `1fb5158b3496a05abb89fb992d45737a02511d47`；
+ccodex README 仅用于发现差异，不能替代官方源码。主要依据是
+`codex-rs/core/src/client.rs`、`core/src/session/mod.rs`、`protocol/src/responses_metadata.rs`
+和 `login/src/auth/manager.rs`。
+
+- OAuth/PAT Responses Lite：工具和非空 instructions 转为输入前缀，保留已有历史工具声明、工具结果、schema 与显式 tool_choice；图片 detail 仅在图片内容项上移除，不递归改写工具 schema。API key 不套用此私有转换。
+- 普通 HTTP 与透传统一 session/thread/turn 元数据，身份隔离包含调用方和上游凭据；工具续接保留真实 turn_id/时间，不凭每次 HTTP 请求生成新 turn。v2 压缩保留 compaction_trigger 与原压缩细节，legacy compact 不新增 client_metadata。
+- OAuth Responses 上游声明 `Accept: text/event-stream`，legacy compact 使用 JSON。默认 HTTP 传输只压缩 `https://chatgpt.com/backend-api/codex/responses` 的可重放 JSON 请求；API key、其他域名、legacy compact、WS 帧不套用 zstd。重试的 GetBody 和 ContentLength 必须与实际发送内容一致。
+- OAuth 提前五分钟刷新，优先读取 JWT 到期时间；推理 HTTP 与三个 WS 握手入口遇 401 最多原账号恢复一次。永久拒绝按凭据版本记忆；临时错误不能当作永久失效，API key/PAT/AgentIdentity 不进入 refresh-token 恢复。模型清单拉取与人工账号测试有独立发送链路，不能把推理恢复覆盖范围外推到这些探针。
+- 不应因第三方 README 删除合法 beta/turn-state：官方会声明已启用的 RemoteCompactionV2，且同 turn 的重试与续接可以携带 turn-state；跨账号隔离应针对具体 opaque token，而不是覆盖整段会话的最后一个 token。
+
+定向回归（在 `backend` 目录）：
+
+```bash
+go test -tags=unit ./internal/service ./internal/repository ./internal/handler ./internal/pkg/openai -run 'OpenAI|Codex|OAuthRefresh|HTTPUpstream' -count=1
+```
+
+协议兼容不等于与官方二进制逐字节相同，也不能证明账号不会被限制。Go 的 TLS/HTTP 栈、
+部署出口及运营方式仍可能不同；不自动伪造工作区、sandbox 或遥测。离线回归与本地抓包
+不代表真实 OpenAI 账号验收，不能用本文推断未公开的风控规则。
+
+### Claude Code / Anthropic 转发兼容性
+
+Claude Code 2.1.283 的转发基线应优先保证协议语义，而不是逐字节仿冒：
+
+- Anthropic SSE 必须按空行聚合；多条 `data:` 用换行拼接；流内错误使用 `event: error`；不完整 `message_stop` 不能提前视为终止。
+- OAuth 请求只改写明确需要隔离的身份字段；`metadata.user_id` 的 `parent_session_id`、`tk` 和未来扩展字段必须保留。真实存在的 Claude Code agent/request 头可以透传，但不得无条件合成。
+- `messages` 与 `count_tokens` 必须保持客户端识别、beta、system 和 provider 路由一致。Vertex service-account 的计数请求走 Vertex Anthropic `count-tokens:rawPredict`。
+- `ProxyID`、`custom_base_url`、Vertex/Bedrock/provider 配置是实际出口选择，必须保留账户级自定义地域和代理；不得用伪造 IP、地区头、遥测或机器标识规避上游策略。
+- 不自动转发 Claude Code 产品遥测，不把代理自己的 user/device ID 注入上游；模型请求上下文、产品遥测和可选 OTEL 详细记录是三条不同数据路径。
+
+本地回归：
+
+```bash
+go test -tags=unit ./internal/service ./internal/handler ./internal/repository ./internal/pkg/claude ./internal/pkg/anthropicfp -run 'Test(.*(Claude|Anthropic|Gateway|Metadata|Identity|Streaming|Passthrough|CountTokens|OAuth|Cache|Beta|Thinking|Tool|SSE|HTTPUpstream|CLIVersion|Billing).*)' -count=1
+```
+
 ## 四、常见坑点 & 解决方案
 
 ### 坑 1：pnpm-lock.yaml 必须同步提交

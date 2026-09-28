@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,14 +17,13 @@ import (
 // codex-api/src/sse/responses.rs 与 endpoint/compact.rs）。
 const openAICodexTurnStateHeader = "x-codex-turn-state"
 
-// turn-state blob 是上游在"出站身份"（含 #5553 指纹收敛改写后的
-// installation/session/thread 标识）下铸造的，同账号回放自洽；跨账号回放
-// （failover 换号后客户端仍回带旧账号的 blob）是代理链独有、真实 Codex
-// 永远不会产生的矛盾信号。溯源表记录每个下游会话最近一次铸造该 blob 的
-// 账号，出站守卫据此剥离已知异账号的回带值。
+// Track the exact downstream sticky token, not just the most recent response
+// for a session. Parallel threads and overlapping turns can hold different
+// tokens from different accounts at the same time.
 type openAICodexTurnStateOrigin struct {
-	accountID int64
-	expiresAt time.Time
+	accountID           int64
+	credentialNamespace string
+	expiresAt           time.Time
 }
 
 // openAICodexTurnStateSeed 返回溯源表键：API Key + 客户端原始会话标识。
@@ -38,6 +39,15 @@ func openAICodexTurnStateSeed(c *gin.Context) string {
 		return ""
 	}
 	return strconv.FormatInt(getAPIKeyIDFromContext(c), 10) + "\x00" + sessionID
+}
+
+func openAICodexTurnStateProvenanceKey(c *gin.Context, state string) string {
+	seed := openAICodexTurnStateSeed(c)
+	if seed == "" || state == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(state))
+	return seed + "\x00" + hex.EncodeToString(digest[:])
 }
 
 // relayOpenAICodexTurnState 将上游响应中的 turn-state 显式写入下游响应头，
@@ -56,7 +66,7 @@ func (s *OpenAIGatewayService) relayOpenAICodexTurnState(c *gin.Context, account
 		return
 	}
 	c.Writer.Header().Set(canonical, state)
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	s.noteOpenAICodexTurnStateProvenance(c, account, state)
 }
 
 // stageOpenAICodexTurnState 将上游 turn-state 暂存到延迟提交的响应头集合
@@ -89,7 +99,7 @@ func (s *OpenAIGatewayService) noteStagedOpenAICodexTurnStateCommitted(c *gin.Co
 	if staged == nil || strings.TrimSpace(staged.Get(openAICodexTurnStateHeader)) == "" {
 		return
 	}
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	s.noteOpenAICodexTurnStateProvenance(c, account, extractOpenAICodexTurnState(staged))
 }
 
 func extractOpenAICodexTurnState(upstream http.Header) string {
@@ -99,18 +109,19 @@ func extractOpenAICodexTurnState(upstream http.Header) string {
 	return strings.TrimSpace(upstream.Get(openAICodexTurnStateHeader))
 }
 
-// noteOpenAICodexTurnStateProvenance 记录（下游会话 → 铸造账号）。
-func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account) {
+// Only committed response tokens can become known provenance.
+func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account, state string) {
 	if s == nil || account == nil || account.ID <= 0 {
 		return
 	}
-	seed := openAICodexTurnStateSeed(c)
+	seed := openAICodexTurnStateProvenanceKey(c, state)
 	if seed == "" {
 		return
 	}
 	s.openaiCodexTurnStateOrigins.Store(seed, openAICodexTurnStateOrigin{
-		accountID: account.ID,
-		expiresAt: time.Now().Add(s.openAIWSSessionStickyTTL()),
+		accountID:           account.ID,
+		credentialNamespace: codexAccountIdentityNamespace(codexAccountIdentitySource(c, account)),
+		expiresAt:           time.Now().Add(s.openAIWSSessionStickyTTL()),
 	})
 	s.sweepOpenAICodexTurnStateOrigins()
 }
@@ -125,7 +136,7 @@ func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, acc
 	if strings.TrimSpace(h.Get(openAICodexTurnStateHeader)) == "" {
 		return
 	}
-	seed := openAICodexTurnStateSeed(c)
+	seed := openAICodexTurnStateProvenanceKey(c, extractOpenAICodexTurnState(h))
 	if seed == "" {
 		return
 	}
@@ -142,7 +153,12 @@ func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, acc
 		s.openaiCodexTurnStateOrigins.Delete(seed)
 		return
 	}
-	if origin.accountID != account.ID {
+	namespace := codexAccountIdentityNamespace(codexAccountIdentitySource(c, account))
+	sameAccount := origin.accountID == account.ID
+	if origin.credentialNamespace != "" && namespace != "" {
+		sameAccount = origin.credentialNamespace == namespace
+	}
+	if !sameAccount {
 		h.Del(openAICodexTurnStateHeader)
 	}
 }

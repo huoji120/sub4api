@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,7 +42,8 @@ func TestIdentityService_RewriteUserID_PreservesTopLevelFieldOrder(t *testing.T)
 	userID := gjson.Get(resultStr, "metadata.user_id").String()
 	parsed := ParseMetadataUserID(userID)
 	require.NotNil(t, parsed)
-	require.Equal(t, "parent-uuid", gjson.Parse(string(parsed.ExtraFields["parent_session_id"])).String())
+	parentMapped := generateUUIDFromSeed(fmt.Sprintf("%d::%s", int64(123), "parent-uuid"))
+	require.Equal(t, parentMapped, gjson.Parse(string(parsed.ExtraFields["parent_session_id"])).String())
 	require.Equal(t, "opaque-token", gjson.Parse(string(parsed.ExtraFields["tk"])).String())
 	require.Equal(t, "client-xyz", parsed.DeviceID)
 	require.Equal(t, "acc-uuid", parsed.AccountUUID)
@@ -71,7 +73,8 @@ func TestIdentityService_RewriteUserIDWithMasking_PreservesTopLevelFieldOrder(t 
 	userID := gjson.Get(resultStr, "metadata.user_id").String()
 	parsed := ParseMetadataUserID(userID)
 	require.NotNil(t, parsed)
-	require.Equal(t, "parent-uuid", gjson.Parse(string(parsed.ExtraFields["parent_session_id"])).String())
+	parentMapped := generateUUIDFromSeed(fmt.Sprintf("%d::%s", int64(123), "parent-uuid"))
+	require.Equal(t, parentMapped, gjson.Parse(string(parsed.ExtraFields["parent_session_id"])).String())
 	require.Equal(t, "opaque-token", gjson.Parse(string(parsed.ExtraFields["tk"])).String())
 	require.Equal(t, "client-xyz", parsed.DeviceID)
 	require.Equal(t, "acc-uuid", parsed.AccountUUID)

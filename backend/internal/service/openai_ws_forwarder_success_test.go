@@ -468,7 +468,6 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersDeviceModePreservesNamespacedC
 	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "window", "client-window"), headers.Get("x-codex-window-id"))
 	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "session", "client-session"), headers.Get("session-id"))
 	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "thread", "client-thread"), headers.Get("thread-id"))
-	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "request", "client-request"), headers.Get("x-client-request-id"))
 }
 
 func TestLogOpenAIWSBindResponseAccountWarn(t *testing.T) {
@@ -1153,38 +1152,7 @@ func TestOpenAIGatewayService_Forward_WSv2_CodexFingerprintHandshakeBodyParityAn
 	require.Equal(t, "resp_ws_fingerprint", result.RequestID)
 	require.NotNil(t, captureConn.lastWrite)
 
-	seed, ok := codexFingerprintSeed(account.Extra)
-	require.True(t, ok)
-	wantInstall := resolveConvergedInstallationID(account, seed)
-	wantSession := resolveConvergedSessionID(seed)
-	wantThread := resolveConvergedThreadID(seed, "header-session")
-	payloadJSON := requestToJSONString(captureConn.lastWrite)
-
-	require.Equal(t, wantInstall, captureDialer.lastHeaders.Get("x-codex-installation-id"))
-	require.Equal(t, wantSession, captureDialer.lastHeaders.Get("session-id"))
-	require.Equal(t, wantSession, captureDialer.lastHeaders.Get("session_id"))
-	require.Equal(t, wantThread, captureDialer.lastHeaders.Get("thread-id"))
-	require.Equal(t, wantThread, captureDialer.lastHeaders.Get("x-client-request-id"))
-	require.Equal(t, wantThread+":0", captureDialer.lastHeaders.Get("x-codex-window-id"))
-
-	require.Equal(t, wantSession, gjson.Get(payloadJSON, "prompt_cache_key").String())
-	require.Equal(t, wantInstall, gjson.Get(payloadJSON, "client_metadata.x-codex-installation-id").String())
-	require.Equal(t, wantSession, gjson.Get(payloadJSON, "client_metadata.session_id").String())
-	require.Equal(t, wantThread, gjson.Get(payloadJSON, "client_metadata.thread_id").String())
-	require.Equal(t, wantThread+":0", gjson.Get(payloadJSON, "client_metadata.x-codex-window-id").String())
-
-	bodyTurnMetadata := gjson.Get(payloadJSON, "client_metadata.x-codex-turn-metadata").String()
-	headerTurnMetadata := captureDialer.lastHeaders.Get("x-codex-turn-metadata")
-	require.Equal(t, wantInstall, gjson.Get(bodyTurnMetadata, "installation_id").String())
-	require.Equal(t, wantSession, gjson.Get(bodyTurnMetadata, "session_id").String())
-	require.Equal(t, wantThread, gjson.Get(bodyTurnMetadata, "thread_id").String())
-	require.Equal(t, wantSession, gjson.Get(headerTurnMetadata, "session_id").String())
-	require.Equal(t, gjson.Get(bodyTurnMetadata, "turn_id").String(), gjson.Get(headerTurnMetadata, "turn_id").String())
-	require.NotZero(t, gjson.Get(bodyTurnMetadata, "turn_started_at_unix_ms").Int())
-	require.Equal(t,
-		gjson.Get(bodyTurnMetadata, "turn_started_at_unix_ms").Int(),
-		gjson.Get(headerTurnMetadata, "turn_started_at_unix_ms").Int(),
-	)
+	requireCodexDistinctThreadMetadata(t, captureDialer.lastHeaders, []byte(requestToJSONString(captureConn.lastWrite)))
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_ResponseDoneUsageParsed(t *testing.T) {

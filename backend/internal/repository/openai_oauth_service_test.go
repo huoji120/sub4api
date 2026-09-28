@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -105,31 +107,23 @@ func (s *OpenAIOAuthServiceSuite) TestExchangeCode_DefaultRedirectURI() {
 	require.Equal(s.T(), "rt", resp.RefreshToken)
 }
 
-func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
+func (s *OpenAIOAuthServiceSuite) TestRefreshToken_JSONContract() {
 	errCh := make(chan string, 1)
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			errCh <- "ParseForm failed"
+		var payload map[string]string
+		mediaType, _, parseErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if parseErr != nil || mediaType != "application/json" || json.NewDecoder(r.Body).Decode(&payload) != nil {
+			errCh <- "expected JSON refresh request"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if got := r.PostForm.Get("grant_type"); got != "refresh_token" {
-			errCh <- "grant_type mismatch"
+		if payload["grant_type"] != "refresh_token" || payload["refresh_token"] != "rt" || payload["client_id"] != openai.ClientID {
+			errCh <- "refresh credential contract mismatch"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if got := r.PostForm.Get("refresh_token"); got != "rt" {
-			errCh <- "refresh_token mismatch"
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if got := r.PostForm.Get("client_id"); got != openai.ClientID {
-			errCh <- "client_id mismatch"
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if got := r.PostForm.Get("scope"); got != openai.RefreshScopes {
-			errCh <- "scope mismatch"
+		if _, exists := payload["scope"]; exists {
+			errCh <- "refresh must not request replacement scopes"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -165,11 +159,12 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
 func (s *OpenAIOAuthServiceSuite) TestRefreshToken_DefaultsToOpenAIClientID() {
 	var seenClientIDs []string
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
+		var payload map[string]string
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		clientID := r.PostForm.Get("client_id")
+		clientID := payload["client_id"]
 		seenClientIDs = append(seenClientIDs, clientID)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"access_token":"at","refresh_token":"rt","token_type":"bearer","expires_in":3600}`)
@@ -186,11 +181,12 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_UseProvidedClientID() {
 	const customClientID = "custom-client-id"
 	var seenClientIDs []string
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
+		var payload map[string]string
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		clientID := r.PostForm.Get("client_id")
+		clientID := payload["client_id"]
 		seenClientIDs = append(seenClientIDs, clientID)
 		if clientID != customClientID {
 			w.WriteHeader(http.StatusBadRequest)
@@ -338,15 +334,38 @@ func (s *OpenAIOAuthServiceSuite) TestExchangeCode_SuccessButInvalidJSON() {
 	require.Error(s.T(), err, "expected error for invalid JSON response")
 }
 
-func (s *OpenAIOAuthServiceSuite) TestRefreshToken_NonSuccessStatus() {
-	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, "unauthorized")
-	}))
-
-	_, err := s.svc.RefreshToken(s.ctx, "rt", "")
-	require.Error(s.T(), err, "expected error for non-2xx status")
-	require.ErrorContains(s.T(), err, "status 401")
+func (s *OpenAIOAuthServiceSuite) TestRefreshToken_RejectionClassificationAndRedaction() {
+	for _, tt := range []struct {
+		name      string
+		status    int
+		body      string
+		permanent bool
+	}{
+		{"unauthorized", 401, `secret-access-token`, true},
+		{"invalid grant", 400, `{"error":"invalid_grant","error_description":"secret-refresh-token"}`, true},
+		{"revoked", 400, `{"error":{"code":"refresh_token_invalidated","message":"secret-refresh-token"}}`, true},
+		{"reused", 400, `{"error":{"code":"refresh_token_reused"}}`, true},
+		{"expired", 400, `{"code":"refresh_token_expired"}`, true},
+		{"network proxy body", 502, `invalid_grant secret-refresh-token`, false},
+		{"transient grant code", 503, `{"error":"invalid_grant"}`, false},
+		{"rate limit", 429, `{"error":{"message":"refresh_token_expired secret-refresh-token"}}`, false},
+	} {
+		s.Run(tt.name, func() {
+			if s.srv != nil {
+				s.srv.Close()
+			}
+			s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			_, err := s.svc.RefreshToken(s.ctx, "rt", "")
+			var rejection *openai.RefreshTokenError
+			require.ErrorAs(s.T(), err, &rejection)
+			require.Equal(s.T(), tt.permanent, rejection.Permanent)
+			require.Equal(s.T(), tt.status, rejection.StatusCode)
+			require.NotContains(s.T(), err.Error(), "secret-")
+		})
+	}
 }
 
 func TestNewOpenAIOAuthClient_DefaultTokenURL(t *testing.T) {

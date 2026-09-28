@@ -449,7 +449,11 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		}
 		if err := scanner.Err(); err != nil {
 			_ = sendEvent(scanEvent{err: err})
+			return
 		}
+		// Scanner drops a trailing blank line at EOF. Emit one synthetic
+		// boundary so the final complete SSE event is dispatched.
+		_ = sendEvent(scanEvent{line: ""})
 	}(scanBuf)
 	defer close(done)
 
@@ -494,13 +498,51 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		keepaliveTimer.Reset(keepaliveInterval)
 	}
 	inPartialEvent := false
+	pendingEventLines := make([]string, 0, 4)
+	writeBlock := func(block string) bool {
+		if clientDisconnected {
+			return false
+		}
+		restored := reverseToolNamesIfPresent(c, []byte(block))
+		if _, err := io.WriteString(w, string(restored)); err != nil {
+			clientDisconnected = true
+			logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
+			return false
+		}
+		flusher.Flush()
+		lastDataAt = time.Now()
+		resetKeepaliveTimer()
+		return true
+	}
+	processCompleteEvent := func(lines []string) {
+		event := parseAnthropicSSEEvent(lines)
+		if event.hasData {
+			data := strings.TrimSpace(event.data)
+			observer.ObserveAnthropic([]byte(data))
+			if data != "" && anthropicStreamEventIsTerminal(event.eventName, data) {
+				sawTerminalEvent = true
+			}
+			if firstTokenMs == nil && data != "" && data != "[DONE]" {
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			parseSSEUsagePassthrough(event.data, usage)
+		}
+		_ = writeBlock(event.rawBlock())
+	}
 
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				// bufio.Scanner does not emit a trailing blank line at EOF.
+				// Dispatch the final buffered event once; a message_stop
+				// header without data still cannot mark the stream terminal.
+				if len(pendingEventLines) > 0 {
+					processCompleteEvent(pendingEventLines)
+					pendingEventLines = pendingEventLines[:0]
+				}
 				if !clientDisconnected {
-					// 兜底补刷，确保最后一个未以空行结尾的事件也能及时送达客户端。
 					flusher.Flush()
 				}
 				if !sawTerminalEvent {
@@ -532,42 +574,21 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			line := ev.line
-			if data, ok := extractAnthropicSSEDataLine(line); ok {
-				trimmed := strings.TrimSpace(data)
-				observer.ObserveAnthropic([]byte(trimmed))
-				if anthropicStreamEventIsTerminal("", trimmed) {
-					sawTerminalEvent = true
+			if line == "" {
+				if len(pendingEventLines) == 0 {
+					// A bare blank line is still an SSE event boundary.
+					if !clientDisconnected {
+						_ = writeBlock("\n")
+					}
+					continue
 				}
-				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
-					ms := int(time.Since(startTime).Milliseconds())
-					firstTokenMs = &ms
-				}
-				parseSSEUsagePassthrough(data, usage)
-			} else {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
-					sawTerminalEvent = true
-				}
+				processCompleteEvent(pendingEventLines)
+				pendingEventLines = pendingEventLines[:0]
+				inPartialEvent = false
+				continue
 			}
-
-			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
-				if _, err := io.WriteString(w, restored); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
-				} else if _, err := io.WriteString(w, "\n"); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
-				} else if line == "" {
-					// 按 SSE 事件边界刷出，减少每行 flush 带来的 syscall 开销。
-					flusher.Flush()
-					lastDataAt = time.Now()
-					resetKeepaliveTimer()
-					inPartialEvent = false
-				} else {
-					inPartialEvent = true
-				}
-			}
+			pendingEventLines = append(pendingEventLines, line)
+			inPartialEvent = true
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -607,18 +628,87 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	}
 }
 
+type anthropicSSEEvent struct {
+	lines     []string
+	eventName string
+	data      string
+	hasData   bool
+}
+
+// parseAnthropicSSEEvent applies the SSE event framing rules to one complete
+// event. The caller must only pass lines terminated by an empty line; an EOF
+// without that delimiter is not a complete event and must not update stream
+// state.
+func parseAnthropicSSEEvent(lines []string) anthropicSSEEvent {
+	event := anthropicSSEEvent{lines: lines}
+	dataLines := make([]string, 0, 1)
+	for _, line := range lines {
+		field, value, ok := parseAnthropicSSELine(line)
+		if !ok {
+			continue
+		}
+		switch field {
+		case "event":
+			event.eventName = value
+		case "data":
+			event.hasData = true
+			dataLines = append(dataLines, value)
+		}
+	}
+	event.data = strings.Join(dataLines, "\n")
+	return event
+}
+
+func parseAnthropicSSELine(line string) (field, value string, ok bool) {
+	if line == "" {
+		return "", "", false
+	}
+	colon := strings.IndexByte(line, ':')
+	if colon < 0 {
+		return line, "", true
+	}
+	field = line[:colon]
+	value = line[colon+1:]
+	// SSE removes one optional U+0020 after the field separator.
+	if strings.HasPrefix(value, " ") {
+		value = value[1:]
+	}
+	return field, value, true
+}
+
+func (event anthropicSSEEvent) rawBlock() string {
+	return strings.Join(event.lines, "\n") + "\n\n"
+}
+
+// blockWithData preserves comments and all non-data SSE fields when a JSON
+// payload must be rewritten. Multiple data lines are replaced by one data
+// field containing their protocol-defined newline-joined value.
+func (event anthropicSSEEvent) blockWithData(data string) string {
+	lines := make([]string, 0, len(event.lines)+1)
+	replaced := false
+	for _, line := range event.lines {
+		field, _, ok := parseAnthropicSSELine(line)
+		if ok && field == "data" {
+			if !replaced {
+				lines = append(lines, "data: "+data)
+				replaced = true
+			}
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if !replaced {
+		lines = append(lines, "data: "+data)
+	}
+	return strings.Join(lines, "\n") + "\n\n"
+}
+
 func extractAnthropicSSEDataLine(line string) (string, bool) {
-	if !strings.HasPrefix(line, "data:") {
+	field, value, ok := parseAnthropicSSELine(line)
+	if !ok || field != "data" {
 		return "", false
 	}
-	start := len("data:")
-	for start < len(line) {
-		if line[start] != ' ' && line[start] != '\t' {
-			break
-		}
-		start++
-	}
-	return line[start:], true
+	return value, true
 }
 
 // parseSSEUsagePassthrough 从 Anthropic SSE data 行提取 usage（包级函数：

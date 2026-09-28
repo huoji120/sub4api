@@ -50,6 +50,13 @@ func TestParseMetadataUserID_JSONFormat_WithAccountUUID(t *testing.T) {
 	require.True(t, parsed.IsNewFormat)
 }
 
+func TestParseFormat_JSONPreservesExtensionFields(t *testing.T) {
+	raw := `{"device_id":"d61f76d0aabbccdd00112233445566778899aabbccddeeff0011223344556677","account_uuid":"acc-uuid","session_id":"c72554f2-1234-5678-abcd-123456789abc","parent_session_id":"parent-uuid","tk":"opaque-token","future":{"enabled":true}}`
+	parsed := ParseMetadataUserID(raw)
+	require.NotNil(t, parsed)
+	require.JSONEq(t, `{"device_id":"d61f76d0aabbccdd00112233445566778899aabbccddeeff0011223344556677","account_uuid":"acc-uuid","session_id":"c72554f2-1234-5678-abcd-123456789abc","parent_session_id":"parent-uuid","tk":"opaque-token","future":{"enabled":true}}`, formatJSONMetadataUserID(parsed.DeviceID, parsed.AccountUUID, parsed.SessionID, parsed.ExtraFields))
+}
+
 func TestParseMetadataUserID_InvalidInputs(t *testing.T) {
 	tests := []struct {
 		name string

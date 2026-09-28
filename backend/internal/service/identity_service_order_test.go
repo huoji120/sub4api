@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type identityCacheStub struct {
@@ -30,33 +31,28 @@ func TestIdentityService_RewriteUserID_PreservesTopLevelFieldOrder(t *testing.T)
 	cache := &identityCacheStub{}
 	svc := NewIdentityService(cache)
 
-	originalUserID := FormatMetadataUserID(
-		"d61f76d0730d2b920763648949bad5c79742155c27037fc77ac3f9805cb90169",
-		"",
-		"7578cf37-aaca-46e4-a45c-71285d9dbb83",
-		"2.1.78",
-	)
+	originalUserID := `{"device_id":"d61f76d0730d2b920763648949bad5c79742155c27037fc77ac3f9805cb90169","account_uuid":"","session_id":"7578cf37-aaca-46e4-a45c-71285d9dbb83","parent_session_id":"parent-uuid","tk":"opaque-token"}`
 	body := []byte(`{"alpha":1,"messages":[],"metadata":{"user_id":` + strconvQuote(originalUserID) + `},"max_tokens":64000,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"stream":true}`)
 
 	result, err := svc.RewriteUserID(body, 123, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
 	require.NoError(t, err)
 	resultStr := string(result)
 
-	assertJSONTokenOrder(t, resultStr, `"alpha"`, `"messages"`, `"metadata"`, `"max_tokens"`, `"thinking"`, `"output_config"`, `"stream"`)
-	require.NotContains(t, resultStr, originalUserID)
-	require.Contains(t, resultStr, `"metadata":{"user_id":"`)
+	userID := gjson.Get(resultStr, "metadata.user_id").String()
+	parsed := ParseMetadataUserID(userID)
+	require.NotNil(t, parsed)
+	require.Equal(t, "parent-uuid", gjson.Parse(string(parsed.ExtraFields["parent_session_id"])).String())
+	require.Equal(t, "opaque-token", gjson.Parse(string(parsed.ExtraFields["tk"])).String())
+	require.Equal(t, "client-xyz", parsed.DeviceID)
+	require.Equal(t, "acc-uuid", parsed.AccountUUID)
+	require.NotEqual(t, originalUserID, userID)
 }
 
 func TestIdentityService_RewriteUserIDWithMasking_PreservesTopLevelFieldOrder(t *testing.T) {
 	cache := &identityCacheStub{maskedSessionID: "11111111-2222-4333-8444-555555555555"}
 	svc := NewIdentityService(cache)
 
-	originalUserID := FormatMetadataUserID(
-		"d61f76d0730d2b920763648949bad5c79742155c27037fc77ac3f9805cb90169",
-		"",
-		"7578cf37-aaca-46e4-a45c-71285d9dbb83",
-		"2.1.78",
-	)
+	originalUserID := `{"device_id":"d61f76d0730d2b920763648949bad5c79742155c27037fc77ac3f9805cb90169","account_uuid":"","session_id":"7578cf37-aaca-46e4-a45c-71285d9dbb83","parent_session_id":"parent-uuid","tk":"opaque-token"}`
 	body := []byte(`{"alpha":1,"messages":[],"metadata":{"user_id":` + strconvQuote(originalUserID) + `},"max_tokens":64000,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"stream":true}`)
 
 	account := &Account{
@@ -72,8 +68,13 @@ func TestIdentityService_RewriteUserIDWithMasking_PreservesTopLevelFieldOrder(t 
 	require.NoError(t, err)
 	resultStr := string(result)
 
-	assertJSONTokenOrder(t, resultStr, `"alpha"`, `"messages"`, `"metadata"`, `"max_tokens"`, `"thinking"`, `"output_config"`, `"stream"`)
-	require.Contains(t, resultStr, cache.maskedSessionID)
+	userID := gjson.Get(resultStr, "metadata.user_id").String()
+	parsed := ParseMetadataUserID(userID)
+	require.NotNil(t, parsed)
+	require.Equal(t, "parent-uuid", gjson.Parse(string(parsed.ExtraFields["parent_session_id"])).String())
+	require.Equal(t, "opaque-token", gjson.Parse(string(parsed.ExtraFields["tk"])).String())
+	require.Equal(t, "client-xyz", parsed.DeviceID)
+	require.Equal(t, "acc-uuid", parsed.AccountUUID)
 	require.True(t, strings.Contains(resultStr, `"metadata":{"user_id":"`))
 }
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -221,6 +222,40 @@ func TestHandleStreamingResponse_SpecialCharactersInJSON(t *testing.T) {
 	require.Contains(t, body, "content_block_delta", "响应应包含转发的 SSE 事件")
 }
 
+func TestHandleStreamingResponse_PreservesCompleteSSEFieldsAndMultilineData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newMinimalGatewayService()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := strings.Join([]string{
+		": keep comment",
+		"event: content_block_delta",
+		"id: upstream-1",
+		"retry: 1200",
+		"data: {\"type\":\"content_block_delta\",",
+		"data: \"index\":0}",
+		"x-vendor-field: preserve",
+		"",
+		"event: message_stop",
+		"data: {\"type\":\"message_stop\"}",
+		"",
+	}, "\n")
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	output := rec.Body.String()
+	require.Contains(t, output, ": keep comment\n")
+	require.Contains(t, output, "id: upstream-1\n")
+	require.Contains(t, output, "retry: 1200\n")
+	require.Contains(t, output, "data: {\"type\":\"content_block_delta\",\ndata: \"index\":0}\n")
+	require.Contains(t, output, "x-vendor-field: preserve\n")
+}
+
 // 上游中途读错误（如 HTTP/2 GOAWAY 触发的 unexpected EOF）发生在向客户端写入任何字节前：
 // 网关应返回 *UpstreamFailoverError 触发账号 failover/重试，而不是把错误事件直接发给客户端。
 func TestHandleStreamingResponse_StreamReadErrorBeforeOutput_TriggersFailover(t *testing.T) {
@@ -393,9 +428,9 @@ func TestHandleStreamingResponse_FailoverBodyDoesNotLeakAddresses(t *testing.T) 
 	require.Contains(t, body, "upstream stream disconnected")
 }
 
-// 上游 HTTP 200 + SSE 流体内 event:error 帧应被识别为 *sseStreamErrorEventError，
-// 且 RawData 等于上游 data: 行的原始 JSON。这是 Forward 主流程后续把 dataLine
-// 透传到 UpstreamFailoverError.ResponseBody 与 ops_error_logs 的前提。
+// 上游 HTTP 200 + SSE 流体内 event:error 帧应被识别为 *sseStreamErrorEventError。
+// 在尚未向客户端写出任何字节时，Forward 上层可先用该错误做 failover，
+// 因此 service 不提前写错误帧。
 func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newMinimalGatewayService()
@@ -419,6 +454,9 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 
 	require.Error(t, err)
 	require.Nil(t, result)
+
+	// No bytes are sent before the parent decides whether to fail over.
+	require.Empty(t, rec.Body.String())
 
 	// typed error 必须可被 errors.As 匹配，RawData 必须保留上游 dataLine 原文
 	var sseErr *sseStreamErrorEventError

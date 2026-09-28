@@ -396,9 +396,9 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 	seed := fmt.Sprintf("%d::%s", accountID, sessionTail)
 	newSessionHash := generateUUIDFromSeed(seed)
 
-	// 根据客户端版本选择输出格式
+	// 根据客户端版本选择输出格式；保留 JSON user_id 中所有未知扩展字段。
 	version := ExtractCLIVersion(fingerprintUA)
-	newUserID := FormatMetadataUserID(cachedClientID, accountUUID, newSessionHash, version)
+	newUserID := formatMetadataUserID(cachedClientID, accountUUID, newSessionHash, parsed.ExtraFields, version)
 	if newUserID == userID {
 		return body, nil
 	}
@@ -469,9 +469,9 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", account.ID, err)
 	}
 
-	// 用 FormatMetadataUserID 重建（保持与 RewriteUserID 相同的格式）
+	// 用与 RewriteUserID 相同的 JSON 格式重建，只替换明确的 session_id 字段。
 	version := ExtractCLIVersion(fingerprintUA)
-	newUserID := FormatMetadataUserID(uidParsed.DeviceID, uidParsed.AccountUUID, maskedSessionID, version)
+	newUserID := formatMetadataUserID(uidParsed.DeviceID, uidParsed.AccountUUID, maskedSessionID, uidParsed.ExtraFields, version)
 
 	slog.Debug("session_id_masking_applied",
 		"account_id", account.ID,

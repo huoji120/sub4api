@@ -60,10 +60,10 @@ func TestRestoreToolNamesInBytes_LongestFirst(t *testing.T) {
 	require.Equal(t, `{"tool":"bar","other":"foo"}`, restored)
 }
 
-func TestRestoreToolNamesInBytes_StaticPrefixRollback(t *testing.T) {
+func TestRestoreToolNamesInBytes_WithoutRequestMappingPreservesData(t *testing.T) {
 	data := []byte(`{"name":"sessions_list","id":"cc_ses_xyz"}`)
 	got := string(restoreToolNamesInBytes(data, nil))
-	require.Equal(t, `{"name":"sessions_list","id":"session_xyz"}`, got)
+	require.Equal(t, string(data), got)
 }
 
 func TestApplyToolNameRewriteToBody_RenamesToolsAndToolChoice(t *testing.T) {

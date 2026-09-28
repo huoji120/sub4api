@@ -183,6 +183,16 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Equal(t, "2023-06-01", getHeaderRaw(upstream.lastReq.Header, "anthropic-version"))
 	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-stainless-lang"), "API Key 透传不应注入 OAuth 指纹头")
+	for _, header := range []string{
+		"x-claude-code-agent-id",
+		"x-claude-code-parent-agent-id",
+		"x-claude-code-request-class",
+		"x-claude-code-agent-type",
+		"x-claude-code-prompt-id",
+		"x-anthropic-additional-protection",
+	} {
+		require.Empty(t, getHeaderRaw(upstream.lastReq.Header, header), header)
+	}
 
 	require.Contains(t, rec.Body.String(), `"cached_tokens":7`)
 	require.NotContains(t, rec.Body.String(), `"cache_read_input_tokens":7`, "透传输出不应被网关改写")
@@ -256,6 +266,16 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
+	for _, header := range []string{
+		"x-claude-code-agent-id",
+		"x-claude-code-parent-agent-id",
+		"x-claude-code-request-class",
+		"x-claude-code-agent-type",
+		"x-claude-code-prompt-id",
+		"x-anthropic-additional-protection",
+	} {
+		require.Empty(t, getHeaderRaw(upstream.lastReq.Header, header), header)
+	}
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, upstreamRespBody, rec.Body.String())
 	require.Empty(t, rec.Header().Get("Set-Cookie"))
@@ -270,7 +290,12 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BearerAuthScheme(t *testing.T
 	c.Request.Header.Set("Authorization", "Bearer inbound-token")
 	c.Request.Header.Set("X-Api-Key", "inbound-api-key")
 	c.Request.Header.Set("Cookie", "secret=1")
-
+	c.Request.Header.Set("X-Claude-Code-Agent-Id", "agent-1")
+	c.Request.Header.Set("X-Claude-Code-Parent-Agent-Id", "parent-1")
+	c.Request.Header.Set("X-Claude-Code-Request-Class", "subagent")
+	c.Request.Header.Set("X-Claude-Code-Agent-Type", "explore")
+	c.Request.Header.Set("X-Claude-Code-Prompt-Id", "prompt-1")
+	c.Request.Header.Set("X-Anthropic-Additional-Protection", "true")
 	svc := &GatewayService{
 		cfg: &config.Config{
 			Security: config.SecurityConfig{
@@ -300,6 +325,16 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BearerAuthScheme(t *testing.T
 	require.Equal(t, "Bearer ollama-key", getHeaderRaw(msgReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(msgReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(msgReq.Header, "cookie"))
+	for _, header := range []string{
+		"x-claude-code-agent-id",
+		"x-claude-code-parent-agent-id",
+		"x-claude-code-request-class",
+		"x-claude-code-agent-type",
+		"x-claude-code-prompt-id",
+		"x-anthropic-additional-protection",
+	} {
+		require.Equal(t, c.Request.Header.Get(header), msgReq.Header.Get(header), header)
+	}
 
 	countReq, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		context.Background(), c, account, []byte(`{"model":"gpt-oss:20b","messages":[]}`), "ollama-key",
@@ -309,6 +344,16 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BearerAuthScheme(t *testing.T
 	require.Equal(t, "Bearer ollama-key", getHeaderRaw(countReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(countReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(countReq.Header, "cookie"))
+	for _, header := range []string{
+		"x-claude-code-agent-id",
+		"x-claude-code-parent-agent-id",
+		"x-claude-code-request-class",
+		"x-claude-code-agent-type",
+		"x-claude-code-prompt-id",
+		"x-anthropic-additional-protection",
+	} {
+		require.Equal(t, c.Request.Header.Get(header), countReq.Header.Get(header), header)
+	}
 }
 
 // TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases 覆盖透传模式下模型映射的各种边界情况
@@ -800,7 +845,12 @@ func TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle(t *t
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-
+	c.Request.Header.Set("X-Claude-Code-Agent-Id", "agent-oauth")
+	c.Request.Header.Set("X-Claude-Code-Parent-Agent-Id", "parent-oauth")
+	c.Request.Header.Set("X-Claude-Code-Request-Class", "main")
+	c.Request.Header.Set("X-Claude-Code-Agent-Type", "main")
+	c.Request.Header.Set("X-Claude-Code-Prompt-Id", "prompt-oauth")
+	c.Request.Header.Set("X-Anthropic-Additional-Protection", "true")
 	svc := &GatewayService{
 		cfg: &config.Config{
 			Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
@@ -820,6 +870,16 @@ func TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle(t *t
 	require.NoError(t, err)
 	require.Equal(t, "Bearer oauth-token", getHeaderRaw(req.Header, "authorization"))
 	require.Contains(t, getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaOAuth, "OAuth 链路仍应按原逻辑补齐 oauth beta")
+	for _, header := range []string{
+		"x-claude-code-agent-id",
+		"x-claude-code-parent-agent-id",
+		"x-claude-code-request-class",
+		"x-claude-code-agent-type",
+		"x-claude-code-prompt-id",
+		"x-anthropic-additional-protection",
+	} {
+		require.Equal(t, c.Request.Header.Get(header), req.Header.Get(header), header)
+	}
 }
 
 func TestGatewayService_AnthropicOAuthMimic_RewritesSystemWithBillingBlock(t *testing.T) {
@@ -1156,6 +1216,90 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_MissingTerminalEventReturnsEr
 	require.NotNil(t, result)
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_MessageStopHeaderThenDisconnectIsIncomplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				MaxLineSize: defaultMaxLineSize,
+			},
+		},
+		rateLimitService: &RateLimitService{},
+	}
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+	}
+	go func() {
+		_, _ = pw.Write([]byte("event: message_stop\n"))
+		_ = pw.Close()
+	}()
+
+	result, err := svc.handleStreamingResponseAnthropicAPIKeyPassthrough(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "claude-3-7-sonnet-20250219")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing terminal event")
+	require.NotNil(t, result)
+	require.Contains(t, rec.Body.String(), "event: message_stop")
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_PreservesSSEFieldsAndMultilineData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				MaxLineSize: defaultMaxLineSize,
+			},
+		},
+		rateLimitService: &RateLimitService{},
+	}
+
+	body := strings.Join([]string{
+		": passthrough comment",
+		"event: message_start",
+		"id: upstream-9",
+		"retry: 1800",
+		"data: {\"type\":\"message_start\",\"message\":{",
+		"data: \"usage\":{\"input_tokens\":11}}}",
+		"x-vendor-field: passthrough",
+		"",
+		"event: error",
+		"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}",
+		"",
+		"event: message_stop",
+		"data: {\"type\":\"message_stop\"}",
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	result, err := svc.handleStreamingResponseAnthropicAPIKeyPassthrough(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "claude-3-7-sonnet-20250219")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 11, result.usage.InputTokens)
+	output := rec.Body.String()
+	require.Contains(t, output, ": passthrough comment\n")
+	require.Contains(t, output, "id: upstream-9\n")
+	require.Contains(t, output, "retry: 1800\n")
+	require.Contains(t, output, "data: {\"type\":\"message_start\",\"message\":{\ndata: \"usage\":{\"input_tokens\":11}}}\n")
+	require.Contains(t, output, "x-vendor-field: passthrough\n")
+	require.Contains(t, output, "event: error\ndata: {\"type\":\"error\"")
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_NonStreamingSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1272,10 +1416,10 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_EmptyResponseBo
 }
 
 func TestExtractAnthropicSSEDataLine(t *testing.T) {
-	t.Run("valid data line with spaces", func(t *testing.T) {
+	t.Run("valid data line with one optional separator space", func(t *testing.T) {
 		data, ok := extractAnthropicSSEDataLine("data:   {\"type\":\"message_start\"}")
 		require.True(t, ok)
-		require.Equal(t, `{"type":"message_start"}`, data)
+		require.Equal(t, `  {"type":"message_start"}`, data)
 	})
 
 	t.Run("non data line", func(t *testing.T) {
@@ -1283,6 +1427,35 @@ func TestExtractAnthropicSSEDataLine(t *testing.T) {
 		require.False(t, ok)
 		require.Empty(t, data)
 	})
+}
+
+func TestParseAnthropicSSEEvent_MultilineDataAndUnknownFields(t *testing.T) {
+	event := parseAnthropicSSEEvent([]string{
+		": keep this comment",
+		"event: message_delta",
+		"id: upstream-42",
+		"retry: 1500",
+		"data: {\"type\":\"message_delta\",",
+		"data: \"usage\"}",
+		"vendor-field: preserve",
+	})
+
+	require.Equal(t, "message_delta", event.eventName)
+	require.True(t, event.hasData)
+	require.Equal(t, "{\"type\":\"message_delta\",\n\"usage\"}", event.data)
+	require.Equal(t, ": keep this comment\nevent: message_delta\nid: upstream-42\nretry: 1500\ndata: {\"type\":\"message_delta\",\ndata: \"usage\"}\nvendor-field: preserve\n\n", event.rawBlock())
+}
+
+func TestAnthropicSSEEvent_BlockWithDataPreservesFields(t *testing.T) {
+	event := parseAnthropicSSEEvent([]string{
+		": keep this comment",
+		"event: message_start",
+		"id: upstream-7",
+		"data: {\"type\":\"message_start\",\"model\":\"mapped\"}",
+		"retry: 2500",
+	})
+
+	require.Equal(t, ": keep this comment\nevent: message_start\nid: upstream-7\ndata: {\"type\":\"message_start\",\"model\":\"original\"}\nretry: 2500\n\n", event.blockWithData(`{"type":"message_start","model":"original"}`))
 }
 
 func TestGatewayService_ParseSSEUsagePassthrough_MessageStartFallbacks(t *testing.T) {
@@ -1581,7 +1754,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingTimeoutAfterClientDi
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = pw.Write([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":9}}}` + "\n"))
+		_, _ = pw.Write([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":9}}}` + "\n\n"))
 		// 保持上游连接静默，触发数据间隔超时分支。
 		time.Sleep(1500 * time.Millisecond)
 		_ = pw.Close()

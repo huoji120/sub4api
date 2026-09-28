@@ -768,7 +768,12 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 		if err := scanner.Err(); err != nil {
 			_ = sendEvent(scanEvent{err: err})
+			return
 		}
+		// Scanner drops a trailing blank line at EOF. Emit one synthetic
+		// boundary so the final complete SSE event (commonly [DONE]) is
+		// dispatched before the channel closes.
+		_ = sendEvent(scanEvent{line: ""})
 	}(scanBuf)
 	defer close(done)
 
@@ -857,49 +862,35 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			return nil, "", nil, nil
 		}
 
-		eventName := ""
-		dataLine := ""
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "event:") {
-				eventName = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
-				continue
-			}
-			if dataLine == "" && sseDataRe.MatchString(trimmed) {
-				dataLine = sseDataRe.ReplaceAllString(trimmed, "")
-			}
-		}
-
+		event := parseAnthropicSSEEvent(lines)
+		eventName := event.eventName
+		dataLine := event.data
 		if eventName == "error" {
+			// Retry only if no bytes have reached the client. Once the
+			// upstream error event is on the wire, preserve it and stop
+			// rather than fail over and concatenate a second stream.
+			if c.Writer.Written() {
+				return []string{event.rawBlock()}, dataLine, nil, &sseStreamErrorEventError{RawData: dataLine}
+			}
 			return nil, dataLine, nil, &sseStreamErrorEventError{RawData: dataLine}
 		}
 
-		if dataLine == "" {
-			return []string{strings.Join(lines, "\n") + "\n\n"}, "", nil, nil
+		if !event.hasData || dataLine == "" {
+			return []string{event.rawBlock()}, dataLine, nil, nil
 		}
 
 		if dataLine == "[DONE]" {
 			sawTerminalEvent = true
-			block := ""
-			if eventName != "" {
-				block = "event: " + eventName + "\n"
-			}
-			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, nil, nil
+			return []string{event.rawBlock()}, dataLine, nil, nil
 		}
 
-		var event map[string]any
-		if err := json.Unmarshal([]byte(dataLine), &event); err != nil {
-			// JSON 解析失败，直接透传原始数据
-			block := ""
-			if eventName != "" {
-				block = "event: " + eventName + "\n"
-			}
-			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, nil, nil
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(dataLine), &decoded); err != nil {
+			// JSON 解析失败，直接透传原始数据和所有 SSE 字段。
+			return []string{event.rawBlock()}, dataLine, nil, nil
 		}
 
-		eventType, _ := event["type"].(string)
+		eventType, _ := decoded["type"].(string)
 		observer.ObserveAnthropic([]byte(dataLine))
 		if eventName == "" {
 			eventName = eventType
@@ -909,10 +900,10 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		if useNoopDeltaKeepalive {
 			switch eventType {
 			case "content_block_start":
-				if idx, ok := sseEventIndex(event); ok {
+				if idx, ok := sseEventIndex(decoded); ok {
 					noopDeltaKeepaliveBlockIndex = -1
 					noopDeltaKeepaliveDeltaType = ""
-					if contentBlock, ok := event["content_block"].(map[string]any); ok {
+					if contentBlock, ok := decoded["content_block"].(map[string]any); ok {
 						blockType, _ := contentBlock["type"].(string)
 						if deltaType := claudeCodeKeepaliveDeltaTypeForContentBlock(blockType); deltaType != "" {
 							noopDeltaKeepaliveBlockIndex = idx
@@ -921,8 +912,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					}
 				}
 			case "content_block_delta":
-				if idx, ok := sseEventIndex(event); ok {
-					if delta, ok := event["delta"].(map[string]any); ok {
+				if idx, ok := sseEventIndex(decoded); ok {
+					if delta, ok := decoded["delta"].(map[string]any); ok {
 						deltaType, _ := delta["type"].(string)
 						if claudeCodeKeepaliveFieldForDeltaType(deltaType) != "" {
 							noopDeltaKeepaliveBlockIndex = idx
@@ -931,7 +922,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					}
 				}
 			case "content_block_stop":
-				if idx, ok := sseEventIndex(event); ok && idx == noopDeltaKeepaliveBlockIndex {
+				if idx, ok := sseEventIndex(decoded); ok && idx == noopDeltaKeepaliveBlockIndex {
 					noopDeltaKeepaliveBlockIndex = -1
 					noopDeltaKeepaliveDeltaType = ""
 				}
@@ -943,37 +934,36 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 		// 兼容 Kimi cached_tokens → cache_read_input_tokens
 		if eventType == "message_start" {
-			if msg, ok := event["message"].(map[string]any); ok {
+			if msg, ok := decoded["message"].(map[string]any); ok {
 				if u, ok := msg["usage"].(map[string]any); ok {
 					eventChanged = reconcileCachedTokens(u) || eventChanged
 				}
 			}
 		}
 		if eventType == "message_delta" {
-			if u, ok := event["usage"].(map[string]any); ok {
+			if u, ok := decoded["usage"].(map[string]any); ok {
 				eventChanged = reconcileCachedTokens(u) || eventChanged
 			}
 		}
 
 		// Cache TTL Override: 重写 SSE 事件中的 cache_creation 分类。
-		// 账号级设置优先；全局 1h 请求注入开启时，默认把 usage 计费归回 5m。
 		if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
 			if eventType == "message_start" {
-				if msg, ok := event["message"].(map[string]any); ok {
+				if msg, ok := decoded["message"].(map[string]any); ok {
 					if u, ok := msg["usage"].(map[string]any); ok {
 						eventChanged = rewriteCacheCreationJSON(u, overrideTarget) || eventChanged
 					}
 				}
 			}
 			if eventType == "message_delta" {
-				if u, ok := event["usage"].(map[string]any); ok {
+				if u, ok := decoded["usage"].(map[string]any); ok {
 					eventChanged = rewriteCacheCreationJSON(u, overrideTarget) || eventChanged
 				}
 			}
 		}
 
 		if needModelReplace {
-			if msg, ok := event["message"].(map[string]any); ok {
+			if msg, ok := decoded["message"].(map[string]any); ok {
 				if model, ok := msg["model"].(string); ok && model == mappedModel {
 					msg["model"] = originalModel
 					eventChanged = true
@@ -981,36 +971,19 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			}
 		}
 
-		usagePatch := s.extractSSEUsagePatch(event)
+		usagePatch := s.extractSSEUsagePatch(decoded)
 		if anthropicStreamEventIsTerminal(eventName, dataLine) {
 			sawTerminalEvent = true
 		}
 		if !eventChanged {
-			block := ""
-			if eventName != "" {
-				block = "event: " + eventName + "\n"
-			}
-			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, usagePatch, nil
+			return []string{event.rawBlock()}, dataLine, usagePatch, nil
 		}
 
-		newData, err := json.Marshal(event)
+		newData, err := json.Marshal(decoded)
 		if err != nil {
-			// 序列化失败，直接透传原始数据
-			block := ""
-			if eventName != "" {
-				block = "event: " + eventName + "\n"
-			}
-			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, usagePatch, nil
+			return []string{event.rawBlock()}, dataLine, usagePatch, nil
 		}
-
-		block := ""
-		if eventName != "" {
-			block = "event: " + eventName + "\n"
-		}
-		block += "data: " + string(newData) + "\n\n"
-		return []string{block}, string(newData), usagePatch, nil
+		return []string{event.blockWithData(string(newData))}, string(newData), usagePatch, nil
 	}
 
 	for {
@@ -1067,21 +1040,14 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 			line := ev.line
-			trimmed := strings.TrimSpace(line)
 
-			if trimmed == "" {
+			if line == "" {
 				if len(pendingEventLines) == 0 {
 					continue
 				}
 
-				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
+				outputBlocks, data, usagePatch, eventErr := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
-				if err != nil {
-					if clientDisconnected {
-						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
-					}
-					return nil, err
-				}
 
 				for _, block := range outputBlocks {
 					if !clientDisconnected {
@@ -1107,6 +1073,15 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 							mergeSSEUsagePatch(usage, usagePatch)
 						}
 					}
+				}
+				if eventErr != nil {
+					if clientDisconnected {
+						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
+					}
+					if c.Writer.Written() {
+						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, eventErr
+					}
+					return nil, eventErr
 				}
 				continue
 			}

@@ -1670,3 +1670,16 @@ func TestNormalizeGLMOpenAIReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestFiltersPreserveLargeIntegers(t *testing.T) {
+	const largeInteger = "9007199254740993" // 2^53 + 1
+	body := []byte(`{"model":"claude-sonnet-4","thinking":{"type":"disabled"},"metadata":{"request_id":` + largeInteger + `},"tools":[{"name":"lookup","input_schema":{"seed":` + largeInteger + `}}],"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"historical"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"seed":` + largeInteger + `}},{"type":"text","text":""}]}]}`)
+
+	filtered := FilterThinkingBlocks(body, "claude-sonnet-4")
+	filtered = StripEmptyTextBlocks(filtered)
+	require.Equal(t, largeInteger, gjson.GetBytes(filtered, "metadata.request_id").Raw)
+	require.Equal(t, largeInteger, gjson.GetBytes(filtered, "tools.0.input_schema.seed").Raw)
+	require.Equal(t, largeInteger, gjson.GetBytes(filtered, "messages.0.content.0.input.seed").Raw)
+	require.Equal(t, "tool_use", gjson.GetBytes(filtered, "messages.0.content.0.type").String())
+	require.NotContains(t, string(filtered), `"type":"thinking"`)
+}

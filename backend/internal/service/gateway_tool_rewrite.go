@@ -322,24 +322,19 @@ func stripDeferredToolCacheControl(body []byte) []byte {
 	return body
 }
 
-// restoreToolNamesInBytes 对 bytes chunk 做逆向还原：假名 → 真名。
-// 按 ReverseOrdered 的假名长度倒序逐个 bytes.Replace，防止子串冲突
-// （与 Parrot _restore_tool_names_in_chunk 的 sorted(..., reverse=True) 等价）。
-// 再做静态前缀还原（cc_sess_ → sessions_ / cc_ses_ → session_）。
-//
-// rw 可为 nil；nil 时仍会做静态前缀还原。
+// restoreToolNamesInBytes restores only a request-scoped mapping. Static
+// prefix rewriting without that mapping can mutate normal response text,
+// IDs, or tool arguments that were never rewritten on the request path.
 func restoreToolNamesInBytes(data []byte, rw *ToolNameRewrite) []byte {
-	if rw != nil {
-		for _, pair := range rw.ReverseOrdered {
-			fake, real := pair[0], pair[1]
-			if fake == "" || fake == real {
-				continue
-			}
-			data = replaceAllBytes(data, fake, real)
-		}
+	if rw == nil {
+		return data
 	}
-	for prefix, replacement := range staticToolNameRewrites {
-		data = replaceAllBytes(data, replacement, prefix)
+	for _, pair := range rw.ReverseOrdered {
+		fake, real := pair[0], pair[1]
+		if fake == "" || fake == real {
+			continue
+		}
+		data = replaceAllBytes(data, fake, real)
 	}
 	return data
 }
@@ -368,14 +363,9 @@ func toolNameRewriteFromContext(c interface {
 	return rw
 }
 
-// reverseToolNamesIfPresent 是响应侧 5 处注入点的统一封装：从 c 取出 mapping
-// 并对 chunk 做 bytes 级假名→真名替换。c 没有 mapping 时仍会做静态前缀还原。
+// reverseToolNamesIfPresent restores only a request-scoped mapping.
 func reverseToolNamesIfPresent(c interface {
 	Get(string) (any, bool)
 }, chunk []byte) []byte {
-	rw := toolNameRewriteFromContext(c)
-	if rw == nil && len(staticToolNameRewrites) == 0 {
-		return chunk
-	}
-	return restoreToolNamesInBytes(chunk, rw)
+	return restoreToolNamesInBytes(chunk, toolNameRewriteFromContext(c))
 }

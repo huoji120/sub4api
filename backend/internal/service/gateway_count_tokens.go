@@ -67,9 +67,19 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	isClaudeCodeCT := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCodeCT && parsed.MetadataUserID != "" {
+		isClaudeCodeCT = systemHasBillingAttributionBlock(body)
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
-
 	if shouldMimicClaudeCode {
+		systemRaw, _ := parsed.SystemValue()
+		systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
+		if systemPromptInjectionEnabled {
+			if err := replaceBody(rewriteSystemForNonClaudeCodeWithPromptBlocks(body, systemRaw, systemPrompt, systemPromptBlocks)); err != nil {
+				return err
+			}
+		}
+
 		var normalizedBody []byte
 		normalizedBody, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, claudeOAuthNormalizeOptions{})
 		if err := replaceBody(normalizedBody); err != nil {
@@ -104,9 +114,8 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return nil
 	}
 
-	// 应用模型映射：
-	// - APIKey 账号：使用账号级别的显式映射（如果配置），否则透传原始模型名
-	// - OAuth/SetupToken 账号：使用 Anthropic 标准映射（短ID → 长ID）
+	// 应用模型映射；Vertex service-account 使用 Vertex 的 dated model ID 规则，
+	// 与 messages 路径保持一致，避免把它当成普通 Anthropic OAuth 模型。
 	if reqModel != "" {
 		mappedModel := reqModel
 		mappingSource := ""
@@ -116,7 +125,20 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 				mappingSource = "account"
 			}
 		}
-		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
+			if candidate, matched := account.ResolveMappedModel(reqModel); matched {
+				mappedModel = candidate
+				mappingSource = "account"
+			} else {
+				normalized := normalizeVertexAnthropicModelID(claude.NormalizeModelID(reqModel))
+				if normalized != reqModel {
+					mappedModel = normalized
+					mappingSource = "vertex"
+				}
+			}
+		}
+		if mappingSource == "" && account.Platform == PlatformAnthropic &&
+			account.Type != AccountTypeAPIKey && account.Type != AccountTypeServiceAccount {
 			normalized := claude.NormalizeModelID(reqModel)
 			if normalized != reqModel {
 				mappedModel = normalized
@@ -451,9 +473,76 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	return req, nil
 }
 
+// buildCountTokensRequestAnthropicVertex builds Vertex AI's Anthropic
+// count-tokens rawPredict request. Vertex has a separate count-tokens model
+// route; a service-account token MUST never fall back to api.anthropic.com.
+func (s *GatewayService) buildCountTokensRequestAnthropicVertex(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	token string,
+	modelID string,
+) (*http.Request, []byte, error) {
+	clientBeta := ""
+	if c != nil && c.Request != nil {
+		clientBeta = getHeaderRaw(c.Request.Header, "anthropic-beta")
+	}
+	policy := s.evaluateBetaPolicy(ctx, clientBeta, account, modelID)
+	if policy.blockErr != nil {
+		return nil, nil, policy.blockErr
+	}
+	finalBeta := filterVertexBetaTokens(clientBeta, mergeDropSets(policy.filterSet))
+
+	vertexBody, err := buildVertexAnthropicCountTokensRequestBody(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(vertexBody, finalBeta); changed {
+		vertexBody = sanitized
+	}
+	fullURL, err := buildVertexAnthropicCountTokensURL(account.VertexProjectID(), account.VertexLocation(modelID))
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(vertexBody))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			lowerKey := strings.ToLower(strings.TrimSpace(key))
+			if !allowedHeaders[lowerKey] || lowerKey == "anthropic-version" {
+				continue
+			}
+			wireKey := resolveWireCasing(key)
+			for _, value := range values {
+				addHeaderRaw(req.Header, wireKey, value)
+			}
+		}
+	}
+	req.Header.Del("authorization")
+	req.Header.Del("x-api-key")
+	req.Header.Del("x-goog-api-key")
+	req.Header.Del("cookie")
+	req.Header.Del("anthropic-version")
+	setHeaderRaw(req.Header, "authorization", "Bearer "+token)
+	setHeaderRaw(req.Header, "content-type", "application/json")
+	deleteHeaderAllForms(req.Header, "anthropic-beta")
+	if finalBeta != "" {
+		setHeaderRaw(req.Header, "anthropic-beta", finalBeta)
+	}
+	return req, vertexBody, nil
+}
+
 // buildCountTokensRequest 构建 count_tokens 上游请求
 func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, mimicClaudeCode bool) (*http.Request, []byte, error) {
 	body = stripDeferredToolCacheControl(body)
+	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
+		body = sanitizeCountTokensRequestBody(body)
+		return s.buildCountTokensRequestAnthropicVertex(ctx, c, account, body, token, modelID)
+	}
 	// 确定目标 URL
 	targetURL := claudeAPICountTokensURL
 	if account.Type == AccountTypeAPIKey {

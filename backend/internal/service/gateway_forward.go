@@ -862,6 +862,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					truncateString(sseErr.RawData, 1000),
 				)
 
+				// handleStreamingResponse already forwarded the complete upstream
+				// event:error frame. A failover error here would make the handler
+				// append a second SSE error (and can corrupt the client stream).
+				if c.Writer.Size() != writerSizeBeforeStream {
+					partial := partialStreamUsageResult(c, resp, streamResult, originalModel, reqModel, startTime, sseErr)
+					return partial, sseErr
+				}
 				return nil, &UpstreamFailoverError{
 					StatusCode:   semanticStatus,
 					ResponseBody: body,

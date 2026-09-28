@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -16,6 +18,10 @@ type ParsedUserID struct {
 	AccountUUID string // may be empty
 	SessionID   string // UUID
 	IsNewFormat bool   // true if the original was JSON format
+	// ExtraFields contains unknown JSON fields from the new format. The raw
+	// values are retained so rewrites do not discard fields added by newer
+	// Claude Code clients (for example parent_session_id and tk).
+	ExtraFields map[string]json.RawMessage
 }
 
 // legacyUserIDRegex matches the legacy user_id format:
@@ -28,6 +34,42 @@ type jsonUserID struct {
 	DeviceID    string `json:"device_id"`
 	AccountUUID string `json:"account_uuid"`
 	SessionID   string `json:"session_id"`
+}
+
+func formatJSONMetadataUserID(deviceID, accountUUID, sessionID string, extraFields map[string]json.RawMessage) string {
+	var out bytes.Buffer
+	out.WriteByte('{')
+	writeField := func(key string, value []byte, comma *bool) {
+		if *comma {
+			out.WriteByte(',')
+		}
+		encodedKey, _ := json.Marshal(key)
+		out.Write(encodedKey)
+		out.WriteByte(':')
+		out.Write(value)
+		*comma = true
+	}
+
+	comma := false
+	deviceRaw, _ := json.Marshal(deviceID)
+	accountRaw, _ := json.Marshal(accountUUID)
+	sessionRaw, _ := json.Marshal(sessionID)
+	writeField("device_id", deviceRaw, &comma)
+	writeField("account_uuid", accountRaw, &comma)
+	writeField("session_id", sessionRaw, &comma)
+
+	keys := make([]string, 0, len(extraFields))
+	for key := range extraFields {
+		if key != "device_id" && key != "account_uuid" && key != "session_id" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		writeField(key, extraFields[key], &comma)
+	}
+	out.WriteByte('}')
+	return out.String()
 }
 
 // ParseMetadataUserID parses a metadata.user_id string in either format.
@@ -47,11 +89,23 @@ func ParseMetadataUserID(raw string) *ParsedUserID {
 		if j.DeviceID == "" || j.SessionID == "" {
 			return nil
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+			return nil
+		}
+		extraFields := make(map[string]json.RawMessage, len(fields))
+		for key, value := range fields {
+			if key == "device_id" || key == "account_uuid" || key == "session_id" {
+				continue
+			}
+			extraFields[key] = value
+		}
 		return &ParsedUserID{
 			DeviceID:    j.DeviceID,
 			AccountUUID: j.AccountUUID,
 			SessionID:   j.SessionID,
 			IsNewFormat: true,
+			ExtraFields: extraFields,
 		}
 	}
 
@@ -72,13 +126,12 @@ func ParseMetadataUserID(raw string) *ParsedUserID {
 // appropriate for the given CLI version. Components are the rewritten values
 // (not necessarily the originals).
 func FormatMetadataUserID(deviceID, accountUUID, sessionID, uaVersion string) string {
+	return formatMetadataUserID(deviceID, accountUUID, sessionID, nil, uaVersion)
+}
+
+func formatMetadataUserID(deviceID, accountUUID, sessionID string, extraFields map[string]json.RawMessage, uaVersion string) string {
 	if IsNewMetadataFormatVersion(uaVersion) {
-		b, _ := json.Marshal(jsonUserID{
-			DeviceID:    deviceID,
-			AccountUUID: accountUUID,
-			SessionID:   sessionID,
-		})
-		return string(b)
+		return formatJSONMetadataUserID(deviceID, accountUUID, sessionID, extraFields)
 	}
 	// Legacy format
 	return "user_" + deviceID + "_account_" + accountUUID + "_session_" + sessionID

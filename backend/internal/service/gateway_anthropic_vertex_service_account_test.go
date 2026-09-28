@@ -130,3 +130,37 @@ func TestGatewayService_BuildAnthropicVertexServiceAccount_PreservesContextManag
 	require.True(t, anthropicBetaTokensContains(outBeta, "context-management-2025-06-27"),
 		"与 body 对称：outgoing anthropic-beta header 同步含 context-management beta")
 }
+
+func TestGatewayService_BuildAnthropicVertexServiceAccountCountTokensRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+	c.Request.Header.Set("Authorization", "Bearer inbound-token")
+	c.Request.Header.Set("X-Api-Key", "inbound-api-key")
+
+	account := &Account{
+		ID:       304,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "vertex-hk-project",
+			"location":   "asia-east2",
+		},
+	}
+	body := []byte(`{"model":"claude-sonnet-4-5@20250929","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+
+	svc := &GatewayService{}
+	req, wireBody, err := svc.buildCountTokensRequest(
+		context.Background(), c, account, body, "vertex-token", "service_account",
+		"claude-sonnet-4-5@20250929", false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "https://asia-east2-aiplatform.googleapis.com/v1/projects/vertex-hk-project/locations/asia-east2/publishers/anthropic/models/count-tokens:rawPredict", req.URL.String())
+	require.Equal(t, "Bearer vertex-token", getHeaderRaw(req.Header, "authorization"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-api-key"))
+	require.NotContains(t, req.URL.String(), "api.anthropic.com")
+	require.Equal(t, vertexAnthropicVersion, gjson.GetBytes(wireBody, "anthropic_version").String())
+	require.Equal(t, "claude-sonnet-4-5@20250929", gjson.GetBytes(wireBody, "model").String())
+	require.False(t, gjson.GetBytes(wireBody, "max_tokens").Exists())
+}

@@ -423,7 +423,9 @@ var ErrNoAvailableAccounts = errors.New("no available accounts")
 // ErrClaudeCodeOnly 表示分组仅允许 Claude Code 客户端访问
 var ErrClaudeCodeOnly = errors.New("this group only allows Claude Code clients")
 
-// allowedHeaders 白名单headers（参考CRS项目）
+// allowedHeaders is the client-header passthrough allowlist. Optional Claude
+// Code gateway hints are forwarded only when the client supplied them; the
+// gateway never synthesizes these identity/routing hints.
 var allowedHeaders = map[string]bool{
 	"accept":                                    true,
 	"x-stainless-retry-count":                   true,
@@ -445,7 +447,22 @@ var allowedHeaders = map[string]bool{
 	"content-type":                              true,
 	"accept-encoding":                           true,
 	"x-claude-code-session-id":                  true,
+	"x-claude-code-agent-id":                    true,
+	"x-claude-code-parent-agent-id":             true,
+	"x-claude-code-request-class":               true,
+	"x-claude-code-agent-type":                  true,
+	"x-claude-code-prompt-id":                   true,
+	"x-anthropic-additional-protection":         true,
 	"x-client-request-id":                       true,
+}
+
+var claudeCodeOptionalHeaders = map[string]bool{
+	"x-claude-code-agent-id":            true,
+	"x-claude-code-parent-agent-id":     true,
+	"x-claude-code-request-class":       true,
+	"x-claude-code-agent-type":          true,
+	"x-claude-code-prompt-id":           true,
+	"x-anthropic-additional-protection": true,
 }
 
 // ErrStickySessionNotFound is returned by GatewayCache.GetSessionAccountID

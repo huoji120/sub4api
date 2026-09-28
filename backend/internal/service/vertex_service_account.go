@@ -358,6 +358,66 @@ func buildVertexAnthropicURL(projectID, location, model string, stream bool) (st
 	), nil
 }
 
+// buildVertexAnthropicCountTokensURL builds Vertex AI's Anthropic token
+// counting route. Unlike messages, count_tokens is exposed as the
+// count-tokens model with the rawPredict action.
+func buildVertexAnthropicCountTokensURL(projectID, location string) (string, error) {
+	projectID = strings.TrimSpace(projectID)
+	location = strings.TrimSpace(location)
+	if projectID == "" {
+		return "", errors.New("vertex project_id is required")
+	}
+	if location == "" {
+		location = vertexDefaultLocation
+	}
+	if !vertexLocationPattern.MatchString(location) {
+		return "", fmt.Errorf("invalid vertex location: %s", location)
+	}
+	host := fmt.Sprintf("%s-aiplatform.googleapis.com", location)
+	if location == "global" {
+		host = "aiplatform.googleapis.com"
+	}
+	return fmt.Sprintf(
+		"https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict",
+		host,
+		url.PathEscape(projectID),
+		url.PathEscape(location),
+	), nil
+}
+
+func buildVertexAnthropicRequestBody(body []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("parse anthropic vertex request body: %w", err)
+	}
+	if payload == nil {
+		return nil, errors.New("anthropic vertex request body must be an object")
+	}
+	delete(payload, "model")
+	version, err := json.Marshal(vertexAnthropicVersion)
+	if err != nil {
+		return nil, fmt.Errorf("marshal vertex anthropic version: %w", err)
+	}
+	payload["anthropic_version"] = version
+	return json.Marshal(payload)
+}
+
+func buildVertexAnthropicCountTokensRequestBody(body []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("parse anthropic vertex count_tokens request body: %w", err)
+	}
+	if payload == nil {
+		return nil, errors.New("anthropic vertex count_tokens request body must be an object")
+	}
+	version, err := json.Marshal(vertexAnthropicVersion)
+	if err != nil {
+		return nil, fmt.Errorf("marshal vertex anthropic version: %w", err)
+	}
+	payload["anthropic_version"] = version
+	return json.Marshal(payload)
+}
+
 func normalizeVertexAnthropicModelID(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" || vertexAnthropicAlreadyDatedIDPattern.MatchString(model) {
@@ -367,14 +427,4 @@ func normalizeVertexAnthropicModelID(model string) string {
 		return m[1] + "@" + m[2]
 	}
 	return model
-}
-
-func buildVertexAnthropicRequestBody(body []byte) ([]byte, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("parse anthropic vertex request body: %w", err)
-	}
-	delete(payload, "model")
-	payload["anthropic_version"] = vertexAnthropicVersion
-	return json.Marshal(payload)
 }

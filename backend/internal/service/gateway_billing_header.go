@@ -89,3 +89,51 @@ func syncBillingHeaderVersion(body []byte, userAgent string, c *gin.Context) []b
 
 	return body
 }
+
+func billingSourceText(body []byte, c *gin.Context) string {
+	if c != nil {
+		if saved, ok := c.Get(claudeBillingSourceTextKey); ok {
+			if savedText, ok := saved.(string); ok {
+				return savedText
+			}
+		}
+	}
+	return extractFirstUserText(body)
+}
+
+// ensureClaudeCodeBillingBlock supplies the upstream-account attribution when
+// a real Claude Code client reached the gateway without its own block.
+func ensureClaudeCodeBillingBlock(body []byte, userAgent string, c *gin.Context) []byte {
+	version := ExtractCLIVersion(userAgent)
+	if version == "" {
+		return body
+	}
+	system := gjson.GetBytes(body, "system")
+	if system.IsArray() {
+		for _, item := range system.Array() {
+			if strings.HasPrefix(item.Get("text").String(), "x-anthropic-billing-header") {
+				return syncBillingHeaderVersion(body, userAgent, c)
+			}
+		}
+	}
+	text := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli; cch=00000;", version, computeClaudeCodeFingerprintFromText(billingSourceText(body, c), version))
+	billingBlock, err := marshalAnthropicSystemTextBlockWithCacheControl(text, nil)
+	if err != nil {
+		return body
+	}
+	items := [][]byte{billingBlock}
+	if system.IsArray() {
+		for _, item := range system.Array() {
+			items = append(items, []byte(item.Raw))
+		}
+	} else if system.Exists() && system.Type == gjson.String {
+		if original, err := marshalAnthropicSystemTextBlockWithCacheControl(system.String(), nil); err == nil {
+			items = append(items, original)
+		}
+	}
+	updated, ok := setJSONRawBytes(body, "system", buildJSONArrayRaw(items))
+	if !ok {
+		return body
+	}
+	return updated
+}

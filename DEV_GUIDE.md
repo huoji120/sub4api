@@ -381,6 +381,12 @@ sub2api-bmai/
     └── CLAUDE.md            # 本文档
 ```
 
+## 用户请求审计记录
+
+用户请求审计的分组记录开关默认全部关闭（空的 `group_ids` allowlist）。管理员必须在“用户请求审计”页面选择分组并显式保存；页面可选择启用或停用的分组。只会记录保存选择之后发生的请求，已有审计记录不会因修改 allowlist 被删除。
+
+审计配置接口为 `GET/PUT /api/v1/admin/user-request-audit/config`。`group_ids` 是分组 ID 数组：显式发送 `[]` 会清空 allowlist 并停止所有新记录；PUT 省略该字段时保留现有选择。保留天数、清理间隔和分片大小等归档设置与该 allowlist 分开维护。
+
 ## 七、参考资源
 
 - [上游仓库](https://github.com/MACOS-DO/sub4api)

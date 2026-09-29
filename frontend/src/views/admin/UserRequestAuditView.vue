@@ -1,43 +1,135 @@
 <template>
   <AppLayout>
-    <TablePageLayout>
+    <TablePageLayout class="audit-page">
       <template #filters>
-        <div class="card space-y-4 p-4 sm:p-6">
+        <div class="card space-y-5 p-4 sm:p-6">
           <p class="text-sm text-amber-700 dark:text-amber-300">{{ t('admin.userRequestAudit.sensitivity') }}</p>
+
           <div class="flex flex-wrap items-end gap-4">
-            <div v-for="field in filterFields" :key="field" class="w-full sm:w-auto sm:min-w-[170px]"><label class="input-label">{{ t(`admin.userRequestAudit.filters.${field}`) }}</label><input v-model.trim="filters[field]" class="input" @keyup.enter="search" /></div>
-            <div><label class="input-label">{{ t('admin.userRequestAudit.filters.protocol') }}</label><Select v-model="filters.protocol" :options="protocolOptions" /></div>
-            <div><label class="input-label">{{ t('admin.userRequestAudit.filters.status') }}</label><input v-model.trim="filters.status" class="input" /></div>
-            <button class="btn btn-primary" :disabled="loading" @click="search">{{ t('common.search') }}</button><button class="btn btn-secondary" :disabled="loading" @click="resetFilters">{{ t('common.reset') }}</button>
+            <div v-for="field in filterFields" :key="field" class="w-full sm:w-auto sm:min-w-[170px]">
+              <label class="input-label">{{ t(`admin.userRequestAudit.filters.${field}`) }}</label>
+              <input v-model.trim="filters[field]" class="input" @keyup.enter="search" />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.userRequestAudit.filters.protocol') }}</label>
+              <Select v-model="filters.protocol" :options="protocolOptions" />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.userRequestAudit.filters.status') }}</label>
+              <input v-model.trim="filters.status" class="input" @keyup.enter="search" />
+            </div>
+            <button class="btn btn-primary" :disabled="loading" @click="search">{{ t('common.search') }}</button>
+            <button class="btn btn-secondary" :disabled="loading" @click="resetFilters">{{ t('common.reset') }}</button>
           </div>
-          <div class="flex flex-wrap items-end gap-4 border-t pt-4">
-            <div><label class="input-label">{{ t('admin.userRequestAudit.exportFormat') }}</label><Select v-model="exportFormat" :options="exportOptions" /></div>
-            <button class="btn btn-secondary" :disabled="exporting" @click="downloadExport">{{ exporting ? t('common.loading') : t('admin.userRequestAudit.export') }}</button>
-            <span class="text-xs text-gray-500">{{ t('admin.userRequestAudit.exportWarning') }}</span>
+
+          <div class="border-t pt-4">
+            <div class="flex flex-wrap items-end gap-4">
+              <div>
+                <label class="input-label">{{ t('admin.userRequestAudit.exportFormat') }}</label>
+                <Select v-model="exportFormat" :options="exportOptions" />
+              </div>
+              <button class="btn btn-secondary" :disabled="exporting" @click="downloadExport">
+                {{ exporting ? t('common.loading') : t('admin.userRequestAudit.export') }}
+              </button>
+              <span class="text-xs text-gray-500">{{ t('admin.userRequestAudit.exportWarning') }}</span>
+            </div>
           </div>
-          <div class="border-t pt-4 space-y-3">
-            <div class="flex flex-wrap items-end gap-4"><div><label class="input-label">{{ t('admin.userRequestAudit.retention') }}</label><input v-model.number="retention" type="number" min="1" max="365" class="input w-32" /></div><div><label class="input-label">{{ t('admin.userRequestAudit.cleanupInterval') }}</label><input v-model.number="cleanupInterval" type="number" min="1" class="input w-32" /></div><div><label class="input-label">{{ t('admin.userRequestAudit.maxShardBytes') }}</label><input v-model.number="maxShardBytes" type="number" min="1" class="input w-40" /></div><button class="btn btn-secondary" :disabled="configSaving" @click="saveConfig">{{ t('common.save') }}</button></div>
-            <div class="flex flex-wrap gap-4 text-xs text-gray-500"><span>{{ t('admin.userRequestAudit.totalBytes') }}: {{ status.total_bytes }}</span><span>{{ t('admin.userRequestAudit.fileCount') }}: {{ status.file_count }}</span><span>{{ t('admin.userRequestAudit.currentShardBytes') }}: {{ status.current_shard_bytes }}</span><span>{{ t('admin.userRequestAudit.oldest') }}: {{ formatTime(status.oldest_at || '') }}</span><span>{{ t('admin.userRequestAudit.latest') }}: {{ formatTime(status.latest_at || '') }}</span><span>{{ t('admin.userRequestAudit.lastCleanup') }}: {{ formatTime(status.last_cleanup_at || '') }}</span></div>
-            <div class="flex gap-2"><button class="btn btn-secondary" :disabled="statusLoading" @click="refreshStatus">{{ t('admin.userRequestAudit.refreshStats') }}</button><button class="btn btn-secondary" :disabled="cleanupLoading" @click="runCleanup">{{ t('admin.userRequestAudit.cleanupNow') }}</button></div>
+
+          <div class="border-t pt-4">
+            <div class="mb-3">
+              <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ t('admin.userRequestAudit.captureGroups') }}</h2>
+              <p class="mt-1 text-xs text-gray-500">{{ t('admin.userRequestAudit.captureGroupsNote') }}</p>
+            </div>
+            <div v-if="groupsLoading" class="text-sm text-gray-500">{{ t('common.loading') }}</div>
+            <div v-else-if="groupsLoadFailed" class="text-sm text-red-600 dark:text-red-400">{{ t('admin.userRequestAudit.groupsLoadFailed') }}</div>
+            <div v-else-if="groups.length === 0" class="text-sm text-gray-500">{{ t('admin.userRequestAudit.noGroups') }}</div>
+            <div v-else class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <label v-for="group in groups" :key="group.id" class="flex items-center gap-2 rounded border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
+                <input v-model="selectedGroupIDs" :value="group.id" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800" />
+                <span class="min-w-0 flex-1 truncate">{{ group.name }}</span>
+                <span class="text-xs text-gray-500">{{ group.status === 'inactive' ? t('admin.userRequestAudit.inactive') : t('admin.userRequestAudit.active') }}</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="border-t pt-4">
+            <div class="flex flex-wrap items-end gap-4">
+              <div>
+                <label class="input-label">{{ t('admin.userRequestAudit.retention') }}</label>
+                <input v-model.number="retention" type="number" min="1" max="365" class="input w-32" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.userRequestAudit.cleanupInterval') }}</label>
+                <input v-model.number="cleanupInterval" type="number" min="1" class="input w-32" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.userRequestAudit.maxShardBytes') }}</label>
+                <input v-model.number="maxShardBytes" type="number" min="1" class="input w-40" />
+              </div>
+              <button class="btn btn-secondary" :disabled="configSaving || !configLoaded || groupsLoadFailed || groupsLoading" @click="saveConfig">{{ t('common.save') }}</button>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-4 text-xs text-gray-500">
+              <span>{{ t('admin.userRequestAudit.totalBytes') }}: {{ status.total_bytes }}</span>
+              <span>{{ t('admin.userRequestAudit.fileCount') }}: {{ status.file_count }}</span>
+              <span>{{ t('admin.userRequestAudit.currentShardBytes') }}: {{ status.current_shard_bytes }}</span>
+              <span>{{ t('admin.userRequestAudit.oldest') }}: {{ formatTime(status.oldest_at) }}</span>
+              <span>{{ t('admin.userRequestAudit.latest') }}: {{ formatTime(status.latest_at) }}</span>
+              <span>{{ t('admin.userRequestAudit.lastCleanup') }}: {{ formatTime(status.last_cleanup_at) }}</span>
+            </div>
+            <div class="mt-3 flex gap-2">
+              <button class="btn btn-secondary" :disabled="statusLoading" @click="refreshStatus">{{ t('admin.userRequestAudit.refreshStats') }}</button>
+              <button class="btn btn-secondary" :disabled="cleanupLoading" @click="runCleanup">{{ t('admin.userRequestAudit.cleanupNow') }}</button>
+            </div>
           </div>
         </div>
       </template>
+
       <template #table>
-        <div class="mb-4 flex gap-2 border-b"><button class="border-b-2 px-3 py-2 text-sm" :class="activeTab === 'records' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500'" @click="activeTab = 'records'">{{ t('admin.userRequestAudit.recordsTab') }}</button><button class="border-b-2 px-3 py-2 text-sm" :class="activeTab === 'groups' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500'" @click="activeTab = 'groups'; fetchGroupStats()">{{ t('admin.userRequestAudit.groupsTab') }}</button></div>
-        <DataTable v-if="activeTab === 'records'" :columns="columns" :data="items" :loading="loading" row-key="id"><template #cell-created_at="{ value }"><span class="whitespace-nowrap">{{ formatTime(value) }}</span></template><template #cell-request="{ row }"><div class="max-w-xs truncate font-mono text-xs">{{ row.protocol }} · {{ row.endpoint }}<br>{{ row.requested_model || '—' }}</div></template><template #cell-status="{ value }"><span class="font-medium">{{ value }}</span></template><template #cell-actions="{ row }"><button class="text-primary-600" @click="openDetail(row.id)">{{ t('admin.userRequestAudit.detail') }}</button></template><template #empty><div class="py-8 text-center text-sm text-gray-500">{{ t('admin.userRequestAudit.empty') }}</div></template></DataTable>
+        <div class="mb-4 flex gap-2 border-b">
+          <button class="border-b-2 px-3 py-2 text-sm" :class="activeTab === 'records' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500'" @click="activeTab = 'records'">{{ t('admin.userRequestAudit.recordsTab') }}</button>
+          <button class="border-b-2 px-3 py-2 text-sm" :class="activeTab === 'groups' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500'" @click="activeTab = 'groups'; fetchGroupStats()">{{ t('admin.userRequestAudit.groupsTab') }}</button>
+        </div>
+
+        <DataTable v-if="activeTab === 'records'" :columns="columns" :data="items" :loading="loading" row-key="id">
+          <template #cell-created_at="{ value }"><span class="whitespace-nowrap">{{ formatTime(value) }}</span></template>
+          <template #cell-user_id="{ value }"><span class="whitespace-nowrap">{{ value || '—' }}</span></template>
+          <template #cell-group="{ row }"><span>{{ row.group_name || row.group_id || '—' }}</span></template>
+          <template #cell-request="{ row }"><div class="max-w-xs truncate font-mono text-xs">{{ row.protocol }} · {{ row.endpoint }}<br />{{ row.requested_model || '—' }}</div></template>
+          <template #cell-status="{ value }"><span class="font-medium">{{ value }}</span></template>
+          <template #cell-actions="{ row }"><button class="text-primary-600" @click="openDetail(row.id)">{{ t('admin.userRequestAudit.detail') }}</button></template>
+          <template #empty><div class="py-8 text-center text-sm text-gray-500">{{ t('admin.userRequestAudit.empty') }}</div></template>
+        </DataTable>
         <div v-else-if="groupLoading" class="py-12 text-center text-sm text-gray-500">{{ t('common.loading') }}</div>
         <div v-else-if="groupStats.length === 0" class="py-8 text-center text-sm text-gray-500">{{ t('admin.userRequestAudit.emptyGroups') }}</div>
-        <div v-else class="overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr class="border-b"><th class="px-3 py-2">{{ t('admin.userRequestAudit.group') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.total') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.completed') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.failed') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.inputTokens') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.outputTokens') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.latest') }}</th></tr></thead><tbody><tr v-for="stat in groupStats" :key="`${stat.group_id ?? 'none'}-${stat.group_name ?? ''}`" class="border-b"><td class="px-3 py-2">{{ stat.group_name || stat.group_id || '—' }}</td><td class="px-3 py-2">{{ stat.total }}</td><td class="px-3 py-2">{{ stat.completed }}</td><td class="px-3 py-2">{{ stat.failed }}</td><td class="px-3 py-2">{{ stat.input_tokens }}</td><td class="px-3 py-2">{{ stat.output_tokens }}</td><td class="px-3 py-2">{{ formatTime(stat.latest_at || '') }}</td></tr></tbody></table></div>
+        <div v-else class="overflow-x-auto">
+          <table class="w-full min-w-max text-left text-sm">
+            <thead><tr class="border-b"><th class="px-3 py-2">{{ t('admin.userRequestAudit.group') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.total') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.completed') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.failed') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.inputTokens') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.outputTokens') }}</th><th class="px-3 py-2">{{ t('admin.userRequestAudit.latest') }}</th></tr></thead>
+            <tbody><tr v-for="stat in groupStats" :key="`${stat.group_id ?? 'none'}-${stat.group_name ?? ''}`" class="border-b"><td class="px-3 py-2">{{ stat.group_name || stat.group_id || '—' }}</td><td class="px-3 py-2">{{ stat.total }}</td><td class="px-3 py-2">{{ stat.completed }}</td><td class="px-3 py-2">{{ stat.failed }}</td><td class="px-3 py-2">{{ stat.input_total }}</td><td class="px-3 py-2">{{ stat.output_total }}</td><td class="px-3 py-2">{{ formatTime(stat.latest_at) }}</td></tr></tbody>
+          </table>
+        </div>
       </template>
       <template #pagination><Pagination v-if="activeTab === 'records' && total" :total="total" :page="page" :page-size="pageSize" @update:page="onPageChange" @update:pageSize="onPageSizeChange" /></template>
     </TablePageLayout>
-    <BaseDialog :show="detailVisible" :title="t('admin.userRequestAudit.detail')" width="wide" @close="detailVisible=false"><div v-if="detailLoading" class="py-12 text-center">{{ t('common.loading') }}</div><div v-else-if="detail" class="space-y-4 py-2"><div class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2"><div v-for="key in detailKeys" :key="key"><span class="text-gray-500">{{ key }}:</span> <span class="break-all font-mono">{{ detail[key] ?? '—' }}</span></div></div><div v-if="detail.request_chatml || detail.response_chatml || detail.chatml" class="space-y-3"><div v-if="detail.request_chatml"><h4 class="font-medium">{{ t('admin.userRequestAudit.requestChatml') }}</h4><pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs dark:bg-dark-800">{{ detail.request_chatml }}</pre></div><div v-if="detail.response_chatml"><h4 class="font-medium">{{ t('admin.userRequestAudit.responseChatml') }}</h4><pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs dark:bg-dark-800">{{ detail.response_chatml }}</pre></div><div v-if="detail.chatml"><h4 class="font-medium">{{ t('admin.userRequestAudit.mergedChatml') }}</h4><pre class="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs dark:bg-dark-800">{{ detail.chatml }}</pre></div></div></div></BaseDialog>
+
+    <BaseDialog :show="detailVisible" :title="t('admin.userRequestAudit.detail')" width="wide" @close="detailVisible = false">
+      <div v-if="detailLoading" class="py-12 text-center">{{ t('common.loading') }}</div>
+      <div v-else-if="detail" class="space-y-4 py-2">
+        <div class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2"><div v-for="key in detailKeys" :key="key"><span class="text-gray-500">{{ key }}:</span> <span class="break-all font-mono">{{ detail[key] ?? '—' }}</span></div></div>
+        <div v-if="detail.request_chatml || detail.response_chatml || detail.chatml" class="space-y-3">
+          <div v-if="detail.request_chatml"><h4 class="font-medium">{{ t('admin.userRequestAudit.requestChatml') }}</h4><pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs dark:bg-dark-800">{{ detail.request_chatml }}</pre></div>
+          <div v-if="detail.response_chatml"><h4 class="font-medium">{{ t('admin.userRequestAudit.responseChatml') }}</h4><pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs dark:bg-dark-800">{{ detail.response_chatml }}</pre></div>
+          <div v-if="detail.chatml"><h4 class="font-medium">{{ t('admin.userRequestAudit.mergedChatml') }}</h4><pre class="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs dark:bg-dark-800">{{ detail.chatml }}</pre></div>
+        </div>
+      </div>
+    </BaseDialog>
   </AppLayout>
 </template>
+
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI, type UserRequestAudit, type UserRequestAuditGroupStat, type UserRequestAuditQuery, type UserRequestAuditExportFormat, type UserRequestAuditStatus } from '@/api/admin'
+import type { AdminGroup } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
@@ -46,22 +138,240 @@ import Select from '@/components/common/Select.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import type { Column } from '@/components/common/types'
 import { useAppStore } from '@/stores'
-const { t } = useI18n(); const appStore = useAppStore()
-const loading = ref(false); const items = ref<UserRequestAudit[]>([]); const total = ref(0); const page = ref(1); const pageSize = ref(20); const retention = ref(7); const configSaving = ref(false); const detailVisible = ref(false); const detailLoading = ref(false); const detail = ref<UserRequestAudit | null>(null); let detailRequest = 0
-const exporting = ref(false); const exportFormat = ref<UserRequestAuditExportFormat>('jsonl'); const activeTab = ref<'records' | 'groups'>('records'); const groupLoading = ref(false); const groupStats = ref<UserRequestAuditGroupStat[]>([]); const status = ref<UserRequestAuditStatus>({ total_bytes: 0, file_count: 0, current_shard_bytes: 0 }); const statusLoading = ref(false); const cleanupLoading = ref(false); const cleanupInterval = ref(24); const maxShardBytes = ref(10485760)
-const filters = reactive<Record<string, string>>({ user_id: '', group_id: '', group_name: '', q: '', requested_model: '', response_id: '', client_request_id: '', status: '', protocol: '', start_time: '', end_time: '' }); const filterFields = ['q', 'user_id', 'group_id', 'group_name', 'requested_model', 'response_id', 'client_request_id', 'start_time', 'end_time']; const protocolOptions = [{ value: '', label: '—' }, { value: 'anthropic_messages', label: 'Anthropic' }, { value: 'openai_responses', label: 'OpenAI Responses' }, { value: 'openai_chat_completions', label: 'OpenAI Chat' }, { value: 'openai_responses_ws', label: 'Responses WS' }]; const exportOptions = [{ value: 'jsonl', label: 'JSONL' }, { value: 'json', label: 'JSON' }]; const columns: Column[] = [{ key: 'created_at', label: 'Created' }, { key: 'request', label: 'Request' }, { key: 'status', label: 'Status' }, { key: 'actions', label: '' }]; const detailKeys = ['id', 'created_at', 'updated_at', 'expires_at', 'user_id', 'api_key_id', 'group_id', 'group_name', 'protocol', 'endpoint', 'requested_model', 'upstream_model', 'client_request_id', 'response_id', 'previous_response_id', 'fallback_hash', 'status', 'input_usage', 'output_usage', 'cache_usage', 'conversation_key', 'last_error'] as const
-function formatTime(value: string) { return value ? new Date(value).toLocaleString() : '—' }
-function query(): UserRequestAuditQuery { return { page: page.value, page_size: pageSize.value, ...filters } }
-async function fetchItems() { loading.value = true; try { const res = await adminAPI.userRequestAudit.list(query()); items.value = res.items; total.value = res.total } catch (e: any) { appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed')) } finally { loading.value = false } }
-async function fetchGroupStats() { groupLoading.value = true; try { groupStats.value = (await adminAPI.userRequestAudit.getGroupStats(query())).items } catch (e: any) { appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed')) } finally { groupLoading.value = false } }
-function search() { page.value = 1; fetchItems(); if (activeTab.value === 'groups') fetchGroupStats() }
-function resetFilters() { Object.keys(filters).forEach(k => filters[k] = ''); search() }
-function onPageChange(v: number) { page.value = v; fetchItems() }
-function onPageSizeChange(v: number) { pageSize.value = v; page.value = 1; fetchItems() }
-async function downloadExport() { exporting.value = true; try { const result = await adminAPI.userRequestAudit.export(query(), exportFormat.value); const url = URL.createObjectURL(result.blob); const link = document.createElement('a'); link.href = url; link.download = result.filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000) } catch (e: any) { appStore.showError(e?.message || t('admin.userRequestAudit.exportFailed')) } finally { exporting.value = false } }
-async function openDetail(id: number) { const token = ++detailRequest; detailVisible.value = true; detailLoading.value = true; detail.value = null; try { const value = await adminAPI.userRequestAudit.get(id); if (token === detailRequest) detail.value = value } catch (e: any) { if (token === detailRequest) { detailVisible.value = false; appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed')) } } finally { if (token === detailRequest) detailLoading.value = false } }
-async function saveConfig() { if (retention.value < 1 || retention.value > 365 || cleanupInterval.value < 1 || maxShardBytes.value < 1) { appStore.showError(t('admin.userRequestAudit.retentionInvalid')); return }; configSaving.value = true; try { const c = await adminAPI.userRequestAudit.updateConfig({ retention_days: retention.value, cleanup_interval_hours: cleanupInterval.value, max_shard_bytes: maxShardBytes.value }); retention.value = c.retention_days; cleanupInterval.value = c.cleanup_interval_hours; maxShardBytes.value = c.max_shard_bytes } catch (e: any) { appStore.showError(e?.message || t('admin.userRequestAudit.configFailed')) } finally { configSaving.value = false } }
-async function refreshStatus() { statusLoading.value = true; try { status.value = await adminAPI.userRequestAudit.getStatus() } catch (e: any) { appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed')) } finally { statusLoading.value = false } }
-async function runCleanup() { cleanupLoading.value = true; try { await adminAPI.userRequestAudit.cleanup(); await refreshStatus() } catch (e: any) { appStore.showError(e?.message || t('admin.userRequestAudit.cleanupFailed')) } finally { cleanupLoading.value = false } }
-onMounted(async () => { fetchItems(); refreshStatus(); try { const c = await adminAPI.userRequestAudit.getConfig(); retention.value = c.retention_days; cleanupInterval.value = c.cleanup_interval_hours; maxShardBytes.value = c.max_shard_bytes } catch { /* unavailable config should not hide records */ } })
+
+const { t } = useI18n()
+const appStore = useAppStore()
+const loading = ref(false)
+const items = ref<UserRequestAudit[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const retention = ref(7)
+const cleanupInterval = ref(24)
+const maxShardBytes = ref(10485760)
+const selectedGroupIDs = ref<number[]>([])
+const groups = ref<AdminGroup[]>([])
+const groupsLoading = ref(false)
+const groupsLoadFailed = ref(false)
+const configLoaded = ref(false)
+const configSaving = ref(false)
+const detailVisible = ref(false)
+const detailLoading = ref(false)
+const detail = ref<UserRequestAudit | null>(null)
+const exporting = ref(false)
+const exportFormat = ref<UserRequestAuditExportFormat>('jsonl')
+const activeTab = ref<'records' | 'groups'>('records')
+const groupLoading = ref(false)
+const groupStats = ref<UserRequestAuditGroupStat[]>([])
+const status = ref<UserRequestAuditStatus>({ total_bytes: 0, file_count: 0, current_shard_bytes: 0 })
+const statusLoading = ref(false)
+const cleanupLoading = ref(false)
+let detailRequest = 0
+
+const filters = reactive<Record<string, string>>({ user_id: '', group_id: '', group_name: '', q: '', requested_model: '', response_id: '', client_request_id: '', status: '', protocol: '', start_time: '', end_time: '' })
+const filterFields = ['q', 'user_id', 'group_id', 'group_name', 'requested_model', 'response_id', 'client_request_id', 'start_time', 'end_time']
+const protocolOptions = [{ value: '', label: '—' }, { value: 'anthropic_messages', label: 'Anthropic' }, { value: 'openai_responses', label: 'OpenAI Responses' }, { value: 'openai_chat_completions', label: 'OpenAI Chat' }, { value: 'openai_responses_ws', label: 'Responses WS' }]
+const exportOptions = [{ value: 'jsonl', label: 'JSONL' }, { value: 'json', label: 'JSON' }]
+const columns = computed<Column[]>(() => [
+  { key: 'created_at', label: t('admin.userRequestAudit.created') },
+  { key: 'user_id', label: t('admin.userRequestAudit.user') },
+  { key: 'group', label: t('admin.userRequestAudit.group') },
+  { key: 'request', label: t('admin.userRequestAudit.request') },
+  { key: 'status', label: t('admin.userRequestAudit.status') },
+  { key: 'actions', label: '' }
+])
+const detailKeys = ['id', 'created_at', 'updated_at', 'expires_at', 'user_id', 'api_key_id', 'group_id', 'group_name', 'protocol', 'endpoint', 'requested_model', 'upstream_model', 'client_request_id', 'response_id', 'previous_response_id', 'fallback_hash', 'status', 'input_usage', 'output_usage', 'cache_usage', 'conversation_key', 'last_error'] as const
+
+function formatTime(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1) return '—'
+  return date.toLocaleString()
+}
+
+function query(): UserRequestAuditQuery {
+  return { page: page.value, page_size: pageSize.value, ...filters }
+}
+
+async function fetchItems() {
+  loading.value = true
+  try {
+    const res = await adminAPI.userRequestAudit.list(query())
+    items.value = res.items
+    total.value = res.total
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed'))
+  } finally {
+    loading.value = false
+  }
+}
+
+async function fetchGroupStats() {
+  groupLoading.value = true
+  try {
+    groupStats.value = await adminAPI.userRequestAudit.getGroupStats(query())
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed'))
+  } finally {
+    groupLoading.value = false
+  }
+}
+
+function search() {
+  page.value = 1
+  fetchItems()
+  if (activeTab.value === 'groups') fetchGroupStats()
+}
+
+function resetFilters() {
+  Object.keys(filters).forEach(key => { filters[key] = '' })
+  search()
+}
+
+function onPageChange(value: number) {
+  page.value = value
+  fetchItems()
+}
+
+function onPageSizeChange(value: number) {
+  pageSize.value = value
+  page.value = 1
+  fetchItems()
+}
+
+async function downloadExport() {
+  exporting.value = true
+  try {
+    const result = await adminAPI.userRequestAudit.export(query(), exportFormat.value)
+    const url = URL.createObjectURL(result.blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = result.filename
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.userRequestAudit.exportFailed'))
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function openDetail(id: number) {
+  const token = ++detailRequest
+  detailVisible.value = true
+  detailLoading.value = true
+  detail.value = null
+  try {
+    const value = await adminAPI.userRequestAudit.get(id)
+    if (token === detailRequest) detail.value = value
+  } catch (e: any) {
+    if (token === detailRequest) {
+      detailVisible.value = false
+      appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed'))
+    }
+  } finally {
+    if (token === detailRequest) detailLoading.value = false
+  }
+}
+
+async function saveConfig() {
+  if (retention.value < 1 || retention.value > 365 || cleanupInterval.value < 1 || maxShardBytes.value < 1) {
+    appStore.showError(t('admin.userRequestAudit.retentionInvalid'))
+    return
+  }
+  configSaving.value = true
+  try {
+    const config = await adminAPI.userRequestAudit.updateConfig({ retention_days: retention.value, cleanup_interval_hours: cleanupInterval.value, max_shard_bytes: maxShardBytes.value, group_ids: selectedGroupIDs.value })
+    retention.value = config.retention_days
+    cleanupInterval.value = config.cleanup_interval_hours
+    maxShardBytes.value = config.max_shard_bytes
+    selectedGroupIDs.value = Array.isArray(config.group_ids) ? config.group_ids : []
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.userRequestAudit.configFailed'))
+  } finally {
+    configSaving.value = false
+  }
+}
+
+async function refreshStatus() {
+  statusLoading.value = true
+  try {
+    status.value = await adminAPI.userRequestAudit.getStatus()
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.userRequestAudit.loadFailed'))
+  } finally {
+    statusLoading.value = false
+  }
+}
+
+async function runCleanup() {
+  cleanupLoading.value = true
+  try {
+    await adminAPI.userRequestAudit.cleanup()
+    await refreshStatus()
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.userRequestAudit.cleanupFailed'))
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+async function loadConfig() {
+  try {
+    const config = await adminAPI.userRequestAudit.getConfig()
+    if (!Array.isArray(config.group_ids) || config.group_ids.some(id => !Number.isInteger(id) || id <= 0)) throw new Error(t('admin.userRequestAudit.configInvalid'))
+    retention.value = config.retention_days
+    cleanupInterval.value = config.cleanup_interval_hours
+    maxShardBytes.value = config.max_shard_bytes
+    selectedGroupIDs.value = [...config.group_ids]
+    configLoaded.value = true
+  } catch (e: any) {
+    configLoaded.value = false
+    appStore.showError(e?.message || t('admin.userRequestAudit.configFailed'))
+  }
+}
+
+async function loadGroups() {
+  groupsLoading.value = true
+  try {
+    groups.value = await adminAPI.groups.getAllIncludingInactive()
+    groupsLoadFailed.value = false
+  } catch (e: any) {
+    groupsLoadFailed.value = true
+    appStore.showError(e?.message || t('admin.userRequestAudit.groupsLoadFailed'))
+  } finally {
+    groupsLoading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchItems()
+  refreshStatus()
+  loadConfig()
+  loadGroups()
+})
 </script>
+
+<style scoped>
+.audit-page {
+  height: auto !important;
+}
+
+.audit-page :deep(.layout-section-scrollable) {
+  flex: none;
+  min-height: auto;
+}
+
+.audit-page :deep(.table-scroll-container) {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.audit-page :deep(.table-wrapper) {
+  flex: none;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+</style>

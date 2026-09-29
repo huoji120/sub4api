@@ -1017,7 +1017,7 @@ func TestGatewayService_AnthropicOAuthMimic_RewritesSystemWithBillingBlock(t *te
 	}
 }
 
-func TestGatewayService_AnthropicOAuthRealClaudeCodeHaiku_PreservesClientHeadersAndBody(t *testing.T) {
+func TestGatewayService_AnthropicOAuthRealClaudeCodeHaiku_AddsMissingBillingBlock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	metadataUserID := FormatMetadataUserID(
@@ -1069,11 +1069,11 @@ func TestGatewayService_AnthropicOAuthRealClaudeCodeHaiku_PreservesClientHeaders
 	require.Equal(t, "real-client-package", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Package-Version"))
 	require.Equal(t, clientBeta, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-client-request-id"), "真实 CC 不应被强制写入 mimic request id")
-	require.Equal(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(upstream.lastBody, "system").Raw)
-	require.Equal(t, gjson.GetBytes(body, "messages").Raw, gjson.GetBytes(upstream.lastBody, "messages").Raw)
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system.0.text").String(), "x-anthropic-billing-header: cc_version="+claude.CLICurrentVersion+".")
+	require.Equal(t, gjson.GetBytes(body, "system.0.text").String(), gjson.GetBytes(upstream.lastBody, "system.1.text").String())
 	require.Equal(t, metadataUserID, gjson.GetBytes(upstream.lastBody, "metadata.user_id").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "context_management").Exists())
-	require.NotContains(t, string(upstream.lastBody), "x-anthropic-billing-header:")
+	require.Contains(t, string(upstream.lastBody), "x-anthropic-billing-header:")
 }
 
 func TestGatewayService_AnthropicOAuth_SystemPromptInjectionCanBeDisabled(t *testing.T) {

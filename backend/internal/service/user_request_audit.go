@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -116,15 +118,18 @@ type UserRequestAuditCapture struct {
 }
 
 type UserRequestAuditService struct {
-	repo          UserRequestAuditRepository
-	settings      SettingRepository
-	queue         chan func(context.Context)
-	stop          chan struct{}
-	done          chan struct{}
-	startOnce     sync.Once
-	stopOnce      sync.Once
-	cleanupMu     sync.Mutex
-	lastCleanupAt time.Time
+	repo           UserRequestAuditRepository
+	settings       SettingRepository
+	queue          chan func(context.Context)
+	stop           chan struct{}
+	done           chan struct{}
+	startOnce      sync.Once
+	stopOnce       sync.Once
+	cleanupMu      sync.Mutex
+	lastCleanupAt  time.Time
+	groupIDsMu     sync.RWMutex
+	groupIDs       []int64
+	groupIDsLoaded bool
 }
 
 func NewUserRequestAuditService(repo UserRequestAuditRepository, settings SettingRepository) *UserRequestAuditService {
@@ -237,6 +242,9 @@ func (s *UserRequestAuditService) Enqueue(capture UserRequestAuditCapture) strin
 	if _, ok := userRequestAuditProtocols[capture.Protocol]; !ok {
 		return ""
 	}
+	if !s.auditGroupEnabled(capture.GroupID) {
+		return ""
+	}
 	fallback := UserRequestAuditFallbackHash(capture.UserID, capture.GroupID, capture.Body)
 	audit := &UserRequestAudit{
 		CreatedAt: time.Now().UTC(),
@@ -255,6 +263,22 @@ func (s *UserRequestAuditService) Enqueue(capture UserRequestAuditCapture) strin
 		}
 	})
 	return audit.LogicalKey
+}
+
+func (s *UserRequestAuditService) auditGroupEnabled(groupID *int64) bool {
+	if s == nil || groupID == nil {
+		return false
+	}
+	groupIDs, err := s.GetAuditGroupIDs(context.Background())
+	if err != nil {
+		return false
+	}
+	for _, enabledID := range groupIDs {
+		if enabledID == *groupID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *UserRequestAuditService) Complete(completion UserRequestAuditCompletion) {
@@ -449,9 +473,10 @@ func (s *UserRequestAuditService) CleanupNow(ctx context.Context) (int64, error)
 }
 
 type UserRequestAuditConfig struct {
-	RetentionDays        int   `json:"retention_days"`
-	CleanupIntervalHours int   `json:"cleanup_interval_hours"`
-	MaxShardBytes        int64 `json:"max_shard_bytes"`
+	RetentionDays        int     `json:"retention_days"`
+	CleanupIntervalHours int     `json:"cleanup_interval_hours"`
+	MaxShardBytes        int64   `json:"max_shard_bytes"`
+	GroupIDs             []int64 `json:"group_ids,omitempty"`
 }
 
 const UserRequestAuditDefaultCleanupIntervalHours = 24
@@ -463,19 +488,37 @@ type userRequestAuditConfigRepo interface {
 }
 
 func (s *UserRequestAuditService) GetArchiveConfig() UserRequestAuditConfig {
-	cfg := UserRequestAuditConfig{RetentionDays: s.retentionDays(), CleanupIntervalHours: UserRequestAuditDefaultCleanupIntervalHours, MaxShardBytes: UserRequestAuditDefaultMaxShardBytes}
-	if r, ok := s.repo.(userRequestAuditConfigRepo); ok {
-		x := r.GetAuditConfig()
-		if x.CleanupIntervalHours > 0 {
-			cfg.CleanupIntervalHours = x.CleanupIntervalHours
-		}
-		if x.MaxShardBytes > 0 {
-			cfg.MaxShardBytes = x.MaxShardBytes
+	groupIDs, _ := s.GetAuditGroupIDs(context.Background())
+	if groupIDs == nil {
+		groupIDs = []int64{}
+	}
+	cfg := UserRequestAuditConfig{RetentionDays: s.retentionDays(), CleanupIntervalHours: UserRequestAuditDefaultCleanupIntervalHours, MaxShardBytes: UserRequestAuditDefaultMaxShardBytes, GroupIDs: groupIDs}
+	if s != nil {
+		if r, ok := s.repo.(userRequestAuditConfigRepo); ok {
+			x := r.GetAuditConfig()
+			if x.CleanupIntervalHours > 0 {
+				cfg.CleanupIntervalHours = x.CleanupIntervalHours
+			}
+			if x.MaxShardBytes > 0 {
+				cfg.MaxShardBytes = x.MaxShardBytes
+			}
 		}
 	}
 	return cfg
 }
+
 func (s *UserRequestAuditService) SetArchiveConfig(cfg UserRequestAuditConfig) error {
+	return s.setArchiveConfig(cfg, true)
+}
+
+// SetArchiveConfigPreservingGroups updates archive settings without writing a
+// previously-read group selection. This keeps an omitted group_ids field from
+// resurrecting a concurrent admin change.
+func (s *UserRequestAuditService) SetArchiveConfigPreservingGroups(cfg UserRequestAuditConfig) error {
+	return s.setArchiveConfig(cfg, false)
+}
+
+func (s *UserRequestAuditService) setArchiveConfig(cfg UserRequestAuditConfig, updateGroups bool) error {
 	if cfg.CleanupIntervalHours < 1 || cfg.CleanupIntervalHours > 168 {
 		return fmt.Errorf("cleanup interval must be between 1 and 168 hours")
 	}
@@ -485,10 +528,96 @@ func (s *UserRequestAuditService) SetArchiveConfig(cfg UserRequestAuditConfig) e
 	if err := s.SetRetentionDays(context.Background(), cfg.RetentionDays); err != nil {
 		return err
 	}
+	if updateGroups {
+		if err := s.SetAuditGroupIDs(context.Background(), cfg.GroupIDs); err != nil {
+			return err
+		}
+	}
 	if r, ok := s.repo.(userRequestAuditConfigRepo); ok {
 		return r.SetAuditConfig(cfg)
 	}
 	return nil
+}
+
+func (s *UserRequestAuditService) GetAuditGroupIDs(ctx context.Context) ([]int64, error) {
+	if s == nil {
+		return []int64{}, nil
+	}
+	s.groupIDsMu.Lock()
+	defer s.groupIDsMu.Unlock()
+	if s.groupIDsLoaded {
+		return append([]int64{}, s.groupIDs...), nil
+	}
+	if s.settings == nil {
+		s.groupIDs = []int64{}
+		s.groupIDsLoaded = true
+		return []int64{}, nil
+	}
+	raw, err := s.settings.GetValue(ctx, SettingKeyUserRequestAuditGroupIDs)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) || strings.TrimSpace(raw) == "" {
+			s.groupIDs = []int64{}
+			s.groupIDsLoaded = true
+			return []int64{}, nil
+		}
+		return []int64{}, err
+	}
+	var ids []int64
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+			s.groupIDs = []int64{}
+			s.groupIDsLoaded = true
+			return []int64{}, fmt.Errorf("invalid audit group IDs setting: %w", err)
+		}
+	}
+	normalized, err := normalizeAuditGroupIDs(ids)
+	if err != nil {
+		s.groupIDs = []int64{}
+		s.groupIDsLoaded = true
+		return []int64{}, err
+	}
+	s.groupIDs = append([]int64{}, normalized...)
+	s.groupIDsLoaded = true
+	return append([]int64{}, normalized...), nil
+}
+
+func (s *UserRequestAuditService) SetAuditGroupIDs(ctx context.Context, ids []int64) error {
+	normalized, err := normalizeAuditGroupIDs(ids)
+	if err != nil {
+		return err
+	}
+	if s == nil || s.settings == nil {
+		return fmt.Errorf("user request audit settings unavailable")
+	}
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	s.groupIDsMu.Lock()
+	defer s.groupIDsMu.Unlock()
+	if err := s.settings.Set(ctx, SettingKeyUserRequestAuditGroupIDs, string(raw)); err != nil {
+		return err
+	}
+	s.groupIDs = append([]int64{}, normalized...)
+	s.groupIDsLoaded = true
+	return nil
+}
+
+func normalizeAuditGroupIDs(ids []int64) ([]int64, error) {
+	seen := make(map[int64]struct{}, len(ids))
+	normalized := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, fmt.Errorf("audit group IDs must be positive")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i] < normalized[j] })
+	return normalized, nil
 }
 
 func (s *UserRequestAuditService) GetRetentionDays(ctx context.Context) (int, error) {

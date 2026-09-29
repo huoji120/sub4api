@@ -218,6 +218,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		// 风控中心功能（默认关闭，显式启用）
 		SettingKeyRiskControlEnabled:            "false",
 		SettingKeyUserRequestAuditRetentionDays: "7",
+		SettingKeyUserRequestAuditGroupIDs:      "[]",
 
 		// cyber 会话屏蔽（默认关闭，TTL 默认 3600s）
 		SettingKeyCyberSessionBlockEnabled:    "false",

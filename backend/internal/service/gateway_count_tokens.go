@@ -606,6 +606,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		clientBillingUserAgent = clientHeaders.Get("User-Agent")
 	}
 	if billingUserAgent := effectiveRequestBillingUserAgent(ctMimicUserAgent, clientBillingUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUserAgent != "" {
+		if !mimicClaudeCode {
+			body = ensureClaudeCodeBillingBlock(body, billingUserAgent, c)
+		}
 		body = syncBillingHeaderVersion(body, billingUserAgent, c)
 	}
 

@@ -232,6 +232,9 @@ func (r *wsAuditRecorder) Start(turn int, body []byte, model string) {
 		name = r.apiKey.Group.Name
 	}
 	key := r.svc.Enqueue(service.UserRequestAuditCapture{UserID: r.userID, APIKeyID: r.apiKey.ID, GroupID: gid, GroupName: name, Protocol: "openai_responses_ws", Endpoint: "/openai/v1/responses", RequestedModel: model, PreviousResponseID: strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()), Body: body, Metadata: map[string]any{"transport": "websocket", "turn": turn}})
+	if key == "" {
+		return
+	}
 	r.mu.Lock()
 	r.turns[turn] = &wsAuditTurn{key: key, model: model}
 	r.active = turn

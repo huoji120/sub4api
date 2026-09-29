@@ -46,16 +46,32 @@ func (r *auditServiceTestRepo) DeleteExpired(context.Context, time.Time, int) (i
 }
 
 type auditServiceTestSettings struct {
-	value string
-	set   string
+	mu         sync.Mutex
+	value      string
+	groupValue string
+	set        string
+	setErr     error
 }
 
 func (s *auditServiceTestSettings) Get(context.Context, string) (*Setting, error) { return nil, nil }
-func (s *auditServiceTestSettings) GetValue(context.Context, string) (string, error) {
+func (s *auditServiceTestSettings) GetValue(_ context.Context, key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if key == SettingKeyUserRequestAuditGroupIDs && s.groupValue != "" {
+		return s.groupValue, nil
+	}
 	return s.value, nil
 }
-func (s *auditServiceTestSettings) Set(_ context.Context, _, value string) error {
+func (s *auditServiceTestSettings) Set(_ context.Context, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.set = value
+	if key == SettingKeyUserRequestAuditGroupIDs {
+		if s.setErr != nil {
+			return s.setErr
+		}
+		s.groupValue = value
+	}
 	return nil
 }
 func (s *auditServiceTestSettings) GetMultiple(context.Context, []string) (map[string]string, error) {
@@ -69,9 +85,11 @@ func (s *auditServiceTestSettings) Delete(context.Context, string) error { retur
 
 func TestUserRequestAuditEnqueueUsesUniqueLogicalKeysAndDrains(t *testing.T) {
 	repo := &auditServiceTestRepo{createdCh: make(chan struct{}, 2), completeCh: make(chan struct{}, 2)}
-	svc := NewUserRequestAuditService(repo, nil)
-	first := svc.Enqueue(UserRequestAuditCapture{UserID: 9, APIKeyID: 3, Protocol: "openai_responses", Body: []byte(`{"input":"same"}`)})
-	second := svc.Enqueue(UserRequestAuditCapture{UserID: 9, APIKeyID: 3, Protocol: "openai_responses", Body: []byte(`{"input":"same"}`)})
+	settings := &auditServiceTestSettings{groupValue: "[3]"}
+	svc := NewUserRequestAuditService(repo, settings)
+	groupID := int64(3)
+	first := svc.Enqueue(UserRequestAuditCapture{UserID: 9, APIKeyID: 3, GroupID: &groupID, Protocol: "openai_responses", Body: []byte(`{"input":"same"}`)})
+	second := svc.Enqueue(UserRequestAuditCapture{UserID: 9, APIKeyID: 3, GroupID: &groupID, Protocol: "openai_responses", Body: []byte(`{"input":"same"}`)})
 	if first == "" || second == "" || first == second {
 		t.Fatalf("logical keys must be unique: %q %q", first, second)
 	}
@@ -115,5 +133,58 @@ func TestUserRequestAuditRetentionSettingsValidation(t *testing.T) {
 	}
 	if err := svc.SetRetentionDays(context.Background(), 30); err != nil || settings.set != "30" {
 		t.Fatalf("retention write: %v %q", err, settings.set)
+	}
+}
+func TestUserRequestAuditCaptureIsOptInByGroup(t *testing.T) {
+	groupID := int64(7)
+	otherID := int64(8)
+	svc := NewUserRequestAuditService(nil, &auditServiceTestSettings{groupValue: "[7]"})
+	if key := svc.Enqueue(UserRequestAuditCapture{GroupID: nil, Protocol: "openai_responses"}); key != "" {
+		t.Fatal("group-less capture must be disabled")
+	}
+	if key := svc.Enqueue(UserRequestAuditCapture{GroupID: &otherID, Protocol: "openai_responses"}); key != "" {
+		t.Fatal("unselected group capture must be disabled")
+	}
+	if key := svc.Enqueue(UserRequestAuditCapture{GroupID: &groupID, Protocol: "openai_responses"}); key == "" {
+		t.Fatal("selected group capture must be enabled")
+	}
+	if key := NewUserRequestAuditService(nil, nil).Enqueue(UserRequestAuditCapture{GroupID: &groupID, Protocol: "openai_responses"}); key != "" {
+		t.Fatal("nil settings must fail closed")
+	}
+}
+
+func TestUserRequestAuditGroupSelectionClearReloadAndFailedSave(t *testing.T) {
+	groupID := int64(7)
+	settings := &auditServiceTestSettings{groupValue: "[7]"}
+	svc := NewUserRequestAuditService(nil, settings)
+	if err := svc.SetAuditGroupIDs(context.Background(), []int64{}); err != nil {
+		t.Fatalf("clear selection: %v", err)
+	}
+	if key := svc.Enqueue(UserRequestAuditCapture{GroupID: &groupID, Protocol: "openai_responses"}); key != "" {
+		t.Fatal("cleared selection still enabled capture")
+	}
+	reloaded := NewUserRequestAuditService(nil, settings)
+	if key := reloaded.Enqueue(UserRequestAuditCapture{GroupID: &groupID, Protocol: "openai_responses"}); key != "" {
+		t.Fatal("cleared selection did not persist across service reload")
+	}
+	if err := svc.SetAuditGroupIDs(context.Background(), []int64{7}); err != nil {
+		t.Fatalf("restore selection: %v", err)
+	}
+	settings.setErr = errors.New("save failed")
+	if err := svc.SetAuditGroupIDs(context.Background(), []int64{8}); err == nil {
+		t.Fatal("failed selection save accepted")
+	}
+	if key := svc.Enqueue(UserRequestAuditCapture{GroupID: &groupID, Protocol: "openai_responses"}); key == "" {
+		t.Fatal("failed save changed active selection")
+	}
+}
+
+func TestUserRequestAuditInvalidSelectionFailsClosed(t *testing.T) {
+	groupID := int64(7)
+	for _, raw := range []string{"not-json", "[0]"} {
+		svc := NewUserRequestAuditService(nil, &auditServiceTestSettings{groupValue: raw})
+		if key := svc.Enqueue(UserRequestAuditCapture{GroupID: &groupID, Protocol: "openai_responses"}); key != "" {
+			t.Fatalf("invalid selection %q enabled capture", raw)
+		}
 	}
 }

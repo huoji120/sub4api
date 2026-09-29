@@ -127,14 +127,18 @@ func parseUserRequestAuditFilter(c *gin.Context, page, pageSize int) (service.Us
 }
 
 type userRequestAuditConfigRequest struct {
-	RetentionDays        int   `json:"retention_days,omitempty"`
-	CleanupIntervalHours int   `json:"cleanup_interval_hours,omitempty"`
-	MaxShardBytes        int64 `json:"max_shard_bytes,omitempty"`
+	RetentionDays        int      `json:"retention_days,omitempty"`
+	CleanupIntervalHours int      `json:"cleanup_interval_hours,omitempty"`
+	MaxShardBytes        int64    `json:"max_shard_bytes,omitempty"`
+	GroupIDs             *[]int64 `json:"group_ids"`
 }
 
 func (h *UserRequestAuditHandler) GetConfig(c *gin.Context) {
 	cfg := h.service.GetArchiveConfig()
-	response.Success(c, gin.H{"retention_days": cfg.RetentionDays, "cleanup_interval_hours": cfg.CleanupIntervalHours, "max_shard_bytes": cfg.MaxShardBytes, "storage": h.service.StorageStatus()})
+	if cfg.GroupIDs == nil {
+		cfg.GroupIDs = []int64{}
+	}
+	response.Success(c, gin.H{"retention_days": cfg.RetentionDays, "cleanup_interval_hours": cfg.CleanupIntervalHours, "max_shard_bytes": cfg.MaxShardBytes, "group_ids": cfg.GroupIDs, "storage": h.service.StorageStatus()})
 }
 
 func (h *UserRequestAuditHandler) UpdateConfig(c *gin.Context) {
@@ -153,7 +157,16 @@ func (h *UserRequestAuditHandler) UpdateConfig(c *gin.Context) {
 	if req.MaxShardBytes > 0 {
 		cfg.MaxShardBytes = req.MaxShardBytes
 	}
-	if err := h.service.SetArchiveConfig(cfg); err != nil {
+	if req.GroupIDs != nil {
+		cfg.GroupIDs = append([]int64{}, (*req.GroupIDs)...)
+	}
+	var err error
+	if req.GroupIDs == nil {
+		err = h.service.SetArchiveConfigPreservingGroups(cfg)
+	} else {
+		err = h.service.SetArchiveConfig(cfg)
+	}
+	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}

@@ -32,10 +32,15 @@ export interface UserRequestAudit {
 export interface UserRequestAuditQuery {
   page?: number; page_size?: number; user_id?: number | string; group_id?: number | string; group_name?: string; requested_model?: string; response_id?: string; client_request_id?: string; status?: string; protocol?: string; start_time?: string; end_time?: string; q?: string
 }
-export interface UserRequestAuditConfig { retention_days: number; cleanup_interval_hours: number; max_shard_bytes: number }
+export interface UserRequestAuditConfig {
+  retention_days: number
+  cleanup_interval_hours: number
+  max_shard_bytes: number
+  group_ids: number[]
+}
 export interface UserRequestAuditStatus { total_bytes: number; file_count: number; current_shard_bytes: number; oldest_at?: string; latest_at?: string; last_cleanup_at?: string }
-export interface UserRequestAuditGroupStat { group_id?: number; group_name?: string; total: number; completed: number; failed: number; input_tokens: number; output_tokens: number; latest_at?: string }
-export interface UserRequestAuditGroupStatsResponse { items: UserRequestAuditGroupStat[]; total: number }
+export interface UserRequestAuditGroupStat { group_id?: number; group_name?: string; total: number; completed: number; failed: number; input_total: number; output_total: number; latest_at?: string }
+export type UserRequestAuditGroupStatsResponse = UserRequestAuditGroupStat[]
 export type UserRequestAuditExportFormat = 'jsonl' | 'json'
 export interface UserRequestAuditExportResult { blob: Blob; filename: string }
 const exportFilters = (filters: UserRequestAuditQuery): Omit<UserRequestAuditQuery, 'page' | 'page_size'> => { const { page: _page, page_size: _pageSize, ...rest } = filters; return rest }
@@ -51,10 +56,10 @@ function filenameFromDisposition(value: unknown, format: UserRequestAuditExportF
 export const userRequestAuditAPI = {
   async list(params: UserRequestAuditQuery): Promise<PaginatedResponse<UserRequestAudit>> { return (await apiClient.get('/admin/user-request-audit', { params })).data },
   async get(id: number): Promise<UserRequestAudit> { return (await apiClient.get(`/admin/user-request-audit/${id}`)).data },
-  async getGroupStats(params: UserRequestAuditQuery): Promise<UserRequestAuditGroupStatsResponse> { return (await apiClient.get('/admin/user-request-audit/group-stats', { params: exportFilters(params) })).data },
+  async getGroupStats(params: UserRequestAuditQuery): Promise<UserRequestAuditGroupStatsResponse> { return (await apiClient.get('/admin/user-request-audit/groups', { params: exportFilters(params) })).data },
   async getStatus(): Promise<UserRequestAuditStatus> { return (await apiClient.get('/admin/user-request-audit/status')).data },
   async getConfig(): Promise<UserRequestAuditConfig> { return (await apiClient.get('/admin/user-request-audit/config')).data },
-  async updateConfig(config: UserRequestAuditConfig): Promise<UserRequestAuditConfig> { return (await apiClient.put('/admin/user-request-audit/config', config)).data },
+  async updateConfig(config: Partial<UserRequestAuditConfig>): Promise<UserRequestAuditConfig> { return (await apiClient.put('/admin/user-request-audit/config', config)).data },
   async cleanup(): Promise<void> { await apiClient.post('/admin/user-request-audit/cleanup') },
   async export(params: UserRequestAuditQuery, format: UserRequestAuditExportFormat): Promise<UserRequestAuditExportResult> {
     const response = await apiClient.post('/admin/user-request-audit/export', { format, ...exportFilters(params) }, { responseType: 'blob' })

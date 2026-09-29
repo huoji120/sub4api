@@ -93,6 +93,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		clientBillingUserAgent = clientHeaders.Get("User-Agent")
 	}
 	if billingUserAgent := effectiveRequestBillingUserAgent(mimicUserAgent, clientBillingUserAgent, tokenType, mimicClaudeCode, fingerprint); billingUserAgent != "" {
+		if !mimicClaudeCode {
+			body = ensureClaudeCodeBillingBlock(body, billingUserAgent, c)
+		}
 		body = syncBillingHeaderVersion(body, billingUserAgent, c)
 	}
 

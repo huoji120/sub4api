@@ -1165,6 +1165,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				acceptedTurnStartedAt.Store(&responseCreateAtCopy)
 				acceptedTurn = true
 			}
+			if hooks != nil && hooks.ObserveFrame != nil {
+				hooks.ObserveFrame("client", 0, out)
+			}
 			return out, blocked, policyErr
 		},
 		onBlock: func(blocked *OpenAIFastBlockedError) {
@@ -1191,6 +1194,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			fmt.Errorf("write first upstream websocket request: %w", firstWriteErr),
 			false,
 		)
+	}
+	if hooks != nil && hooks.ObserveFrame != nil {
+		hooks.ObserveFrame("client", 0, firstClientMessage)
 	}
 	upstreamFirstMessageSent = true
 
@@ -1301,6 +1307,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if msgType == coderws.MessageText && writeErr == nil {
 					eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 					markOpenAIWSClientVisibleFailure(c, eventType, payload)
+				}
+				if writeErr == nil && hooks != nil && hooks.ObserveFrame != nil {
+					hooks.ObserveFrame("server", int(completedTurns.Load())+1, payload)
 				}
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
 					turnLifecycle.finishTerminalWrite(writeErr == nil, clientFrameConn.markTurnCompleted)

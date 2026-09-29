@@ -263,6 +263,9 @@ type OpenAIWSIngressHooks struct {
 	TurnStarted             func(turn int, startedAt time.Time)
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
+	// ObserveFrame receives payloads after relay transformations and immediately
+	// before a frame is sent, or after a client frame is accepted for relay.
+	ObserveFrame func(direction string, turn int, payload []byte)
 	// MapRequestModel resolves the current turn's client model to the model
 	// that must be written into the upstream response.create frame.
 	MapRequestModel func(turn int, originalModel string) (string, error)

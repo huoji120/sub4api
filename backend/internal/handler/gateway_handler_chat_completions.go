@@ -92,6 +92,12 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	auditRecorder := beginUserRequestAudit(c, h.userRequestAuditService, service.ContentModerationProtocolOpenAIChat, endpointForAudit(c, "/v1/chat/completions"), reqModel, body, apiKey, subject.UserID)
+	defer func() {
+		if auditRecorder != nil {
+			auditRecorder.Finish(c.Writer.Status(), nil, nil)
+		}
+	}()
 
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))

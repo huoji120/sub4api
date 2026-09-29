@@ -124,6 +124,7 @@ func RegisterAdminRoutes(
 
 		// 独立提示词输入审计
 		registerPromptAuditRoutes(admin, h)
+		registerUserRequestAuditRoutes(admin, h)
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
@@ -147,6 +148,14 @@ func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		promptAudit.POST("/events/delete-preview", h.Admin.PromptAudit.DeletePreview)
 		promptAudit.POST("/events/delete-by-filter", h.Admin.PromptAudit.DeleteByFilter)
 	}
+}
+
+func registerUserRequestAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	audits := admin.Group("/user-request-audit")
+	audits.GET("", h.Admin.UserRequestAudit.List)
+	audits.GET("/config", h.Admin.UserRequestAudit.GetConfig)
+	audits.PUT("/config", h.Admin.UserRequestAudit.UpdateConfig)
+	audits.GET("/:id", h.Admin.UserRequestAudit.Get)
 }
 
 func registerAuditLogRoutes(admin *gin.RouterGroup, h *handler.Handlers, _ middleware.StepUpAuthMiddleware) {

@@ -89,6 +89,8 @@ var ProviderSet = wire.NewSet(
 	NewCodexTicketAttemptRepository,
 	NewOpsRepository,
 	NewAuditLogRepository,
+	NewUserRequestAuditRepository,
+	wire.Bind(new(service.UserRequestAuditRepository), new(*UserRequestAuditRepository)),
 	NewPasskeyRepository,
 	NewPasskeySessionStore,
 	NewUserSubscriptionRepository,

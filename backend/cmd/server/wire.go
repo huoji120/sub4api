@@ -127,6 +127,7 @@ func provideCleanup(
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
 	auditLog *service.AuditLogService,
+	userRequestAudit *service.UserRequestAuditService,
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
@@ -205,6 +206,12 @@ func provideCleanup(
 			{"AuditLogService", func() error {
 				if auditLog != nil {
 					auditLog.Stop()
+				}
+				return nil
+			}},
+			{"UserRequestAuditService", func() error {
+				if userRequestAudit != nil {
+					userRequestAudit.Stop()
 				}
 				return nil
 			}},

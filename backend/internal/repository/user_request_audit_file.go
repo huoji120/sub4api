@@ -120,6 +120,9 @@ func (r *FileUserRequestAuditRepository) Complete(ctx context.Context, completio
 	found.UpdatedAt = time.Now().UTC()
 	if completion.ResponseID != "" {
 		found.ResponseID = completion.ResponseID
+		if completion.ResponseID != "" && (strings.HasPrefix(found.ConversationKey, "fallback:") || strings.HasPrefix(found.ConversationKey, "request:")) {
+			found.ConversationKey = "response:" + completion.ResponseID
+		}
 	}
 	if completion.UpstreamModel != "" {
 		found.UpstreamModel = completion.UpstreamModel

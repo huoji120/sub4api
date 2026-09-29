@@ -47,7 +47,7 @@
               <label v-for="group in groups" :key="group.id" class="flex items-center gap-2 rounded border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
                 <input v-model="selectedGroupIDs" :value="group.id" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800" />
                 <span class="min-w-0 flex-1 truncate">{{ group.name }}</span>
-                <span class="text-xs text-gray-500">{{ group.status === 'inactive' ? t('admin.userRequestAudit.inactive') : t('admin.userRequestAudit.active') }}</span>
+                <span class="text-xs" :class="selectedGroupIDs.includes(group.id) ? 'text-emerald-500' : 'text-gray-500'">{{ selectedGroupIDs.includes(group.id) ? t('admin.userRequestAudit.captureEnabled') : t('admin.userRequestAudit.captureDisabled') }}</span>
               </label>
             </div>
           </div>

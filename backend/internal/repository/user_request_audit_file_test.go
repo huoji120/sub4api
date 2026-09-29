@@ -46,12 +46,12 @@ func TestFileUserRequestAuditRestartAndComplete(t *testing.T) {
 	if err := r.Create(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Complete(context.Background(), &service.UserRequestAuditCompletion{LogicalKey: "logical", ResponseChatML: "response", Status: "completed"}); err != nil {
+	if err := r.Complete(context.Background(), &service.UserRequestAuditCompletion{LogicalKey: "logical", ResponseID: "resp_123", ResponseChatML: "response", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
 	r2 := NewFileUserRequestAuditRepository(nil)
 	got, err := r2.GetByID(context.Background(), a.ID)
-	if err != nil || got.Status != "completed" || got.ResponseChatML != "response" {
+	if err != nil || got.Status != "completed" || got.ResponseID != "resp_123" || got.ConversationKey != "response:resp_123" || got.ResponseChatML != "response" {
 		t.Fatalf("restart got=%+v err=%v", got, err)
 	}
 }

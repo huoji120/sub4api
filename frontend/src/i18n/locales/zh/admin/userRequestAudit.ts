@@ -10,6 +10,8 @@ export default {
     noGroups: '暂无分组。',
     active: '启用',
     inactive: '停用',
+    captureEnabled: '记录中',
+    captureDisabled: '未记录',
     retention: '保留天数',
     retentionNote: '允许范围：1 到 365 天。',
     retentionInvalid: '保留设置无效。',

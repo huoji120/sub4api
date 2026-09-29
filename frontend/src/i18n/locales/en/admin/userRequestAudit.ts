@@ -10,6 +10,8 @@ export default {
     noGroups: 'No groups found.',
     active: 'active',
     inactive: 'inactive',
+    captureEnabled: 'recording',
+    captureDisabled: 'not recording',
     retention: 'Retention days',
     retentionNote: 'Allowed range: 1–365 days.',
     retentionInvalid: 'Retention values are invalid.',

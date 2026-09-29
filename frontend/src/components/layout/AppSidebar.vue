@@ -805,6 +805,7 @@ const adminNavItems = computed((): NavItem[] => {
       children: [
         { path: '/admin/risk-control', label: t('nav.contentModeration'), icon: ShieldIcon },
         { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon },
+        { path: '/admin/user-request-audit', label: t('nav.userRequestAudit'), icon: ShieldIcon },
       ],
     },
     { path: '/admin/redeem', label: t('nav.redeemCodes'), icon: TicketIcon, hideInSimpleMode: true },
@@ -837,7 +838,7 @@ const adminNavItems = computed((): NavItem[] => {
     },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true },
-    { path: '/admin/user-request-audit', label: t('nav.userRequestAudit'), icon: ShieldIcon, hideInSimpleMode: true }
+
   ]
 
   const visible = applyFeatureFlags(baseItems)

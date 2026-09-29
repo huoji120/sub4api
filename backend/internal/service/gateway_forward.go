@@ -207,6 +207,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
 	if shouldMimicClaudeCode {
+		captureClaudeBillingSource(c, body)
 		// 与 Parrot 对齐：OAuth 账号无条件重写 system（即使客户端已发了 Claude Code
 		// 风格的 system prompt）。原因：第三方工具（opencode 等）会发 "You are Claude
 		// Code..." system prompt 但缺少 billing attribution block，导致 Anthropic

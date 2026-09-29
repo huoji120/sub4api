@@ -65,7 +65,7 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := syncBillingHeaderVersion([]byte(tt.body), tt.userAgent)
+			result := syncBillingHeaderVersion([]byte(tt.body), tt.userAgent, nil)
 			if tt.unchanged {
 				assert.Equal(t, tt.body, string(result), "body should remain unchanged")
 			} else {
@@ -80,11 +80,16 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 func TestSyncBillingHeaderVersion_RecomputesSuffixAndIsIdempotent(t *testing.T) {
 	body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"hello world"}]}`)
 	version := "2.1.22"
-	result := syncBillingHeaderVersion(body, "claude-cli/"+version)
+	result := syncBillingHeaderVersion(body, "claude-cli/"+version, nil)
 	require.Contains(t, gjson.GetBytes(result, "system.0.text").String(),
 		"cc_version="+version+"."+computeClaudeCodeFingerprint(body, version)+";")
-	require.Equal(t, string(result), string(syncBillingHeaderVersion(result, "claude-cli/"+version)))
+	require.Equal(t, string(result), string(syncBillingHeaderVersion(result, "claude-cli/"+version, nil)))
 	require.JSONEq(t, gjson.GetBytes(body, "messages").Raw, gjson.GetBytes(result, "messages").Raw)
+}
+
+func TestClaudeCodeFingerprintMatchesJavaScriptUTF16Indexing(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","isMeta":true,"content":"ignore this"},{"role":"user","content":"你好世界这是中文测试消息，用来检查指纹算法。"}]}`)
+	require.Equal(t, "d80", computeClaudeCodeFingerprint(body, "2.1.283"))
 }
 
 func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
@@ -95,16 +100,20 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 			mimic     bool
 			identity  bool
 			disableFP bool
+			clientUA  string
 		}{
 			{name: "mimic_overrides_cached_version", mimic: true, identity: true},
 			{name: "mimic_without_identity", mimic: true},
 			{name: "mimic_with_fingerprint_disabled", mimic: true, identity: true, disableFP: true},
-			{name: "passthrough_uses_cached_version", identity: true},
+			{name: "passthrough_recalculates_from_client_ua", identity: true, clientUA: "claude-cli/2.1.283 (external, cli)"},
 		} {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
 				resetGatewayForwardingSettingsCacheForTest(t)
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+				if tc.clientUA != "" {
+					c.Request.Header.Set("User-Agent", tc.clientUA)
+				}
 				body := []byte(`{"model":"claude-haiku-4-5","system":[{"type":"text","text":""}],"messages":[{"role":"user","content":"hello world"}]}`)
 				billing, err := buildBillingAttributionText(body, "2.1.81")
 				require.NoError(t, err)
@@ -141,13 +150,32 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 					wantUA = claude.DefaultHeaders()["User-Agent"]
 				}
 				require.Equal(t, wantUA, getHeaderRaw(req.Header, "User-Agent"))
-				version := ExtractCLIVersion(wantUA)
-				require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
-					"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
+				if tc.mimic {
+					version := ExtractCLIVersion(wantUA)
+					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
+						"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
+				} else if tc.clientUA != "" {
+					version := ExtractCLIVersion(tc.clientUA)
+					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
+						"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
+					require.NotContains(t, gjson.GetBytes(wireBody, "system.0.text").String(), "cc_version=2.9.0.")
+				}
 				actualBody, err := io.ReadAll(req.Body)
 				require.NoError(t, err)
 				require.Equal(t, wireBody, actualBody)
 			})
 		}
 	}
+}
+
+func TestMimicBillingUsesOriginalUserAfterSystemMigration(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	original := []byte(`{"system":"Project instructions","messages":[{"role":"user","content":"你好世界这是中文测试消息，用来检查指纹算法。"}]}`)
+	captureClaudeBillingSource(c, original)
+	body := rewriteSystemForNonClaudeCode(original, "Project instructions")
+	require.Contains(t, extractFirstUserText(body), "[System Instructions]")
+	out := syncBillingHeaderVersion(body, "claude-cli/2.1.283 (external, cli)", c)
+	require.Contains(t, gjson.GetBytes(out, "system.0.text").String(), "cc_version=2.1.283.d80;")
+	require.Contains(t, gjson.GetBytes(out, "system.0.text").String(), "cch=00000;")
+	require.Equal(t, gjson.GetBytes(body, "messages").Raw, gjson.GetBytes(out, "messages").Raw)
 }

@@ -47,7 +47,6 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 		targetURL = s.buildCustomRelayURL(validatedURL, "/v1/messages", account)
 	}
-
 	clientHeaders := http.Header{}
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
@@ -89,9 +88,12 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 避免运行期版本缓存翻转瞬间头/体版本自相矛盾（会被判非正版客户端）。
 	mimicUserAgent := claude.DefaultUserAgent()
 
-	// Mimicry may override the cached User-Agent later, even without a fingerprint.
-	if billingUA := effectiveBillingUserAgent(mimicUserAgent, tokenType, mimicClaudeCode, fingerprint); billingUA != "" {
-		body = syncBillingHeaderVersion(body, billingUA)
+	clientBillingUserAgent := ""
+	if clientHeaders != nil {
+		clientBillingUserAgent = clientHeaders.Get("User-Agent")
+	}
+	if billingUserAgent := effectiveRequestBillingUserAgent(mimicUserAgent, clientBillingUserAgent, tokenType, mimicClaudeCode); billingUserAgent != "" {
+		body = syncBillingHeaderVersion(body, billingUserAgent, c)
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===

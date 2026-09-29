@@ -72,6 +72,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 	if shouldMimicClaudeCode {
+		captureClaudeBillingSource(c, body)
 		systemRaw, _ := parsed.SystemValue()
 		systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
 		if systemPromptInjectionEnabled {
@@ -565,7 +566,6 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 		targetURL = s.buildCustomRelayURL(validatedURL, "/v1/messages/count_tokens", account)
 	}
-
 	clientHeaders := http.Header{}
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
@@ -593,16 +593,16 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 	}
 
-	// Disabled fingerprint unification does not disable forced mimicry headers.
-	var billingFingerprint *Fingerprint
-	if ctEnableFP {
-		billingFingerprint = ctFingerprint
-	}
-	// 一致性铁律：同一次请求内只取一次 mimic UA，billing cc_version 与出站
-	// User-Agent 头共用这一个字符串（同 buildUpstreamRequest）。
+	// Real Claude Code uses its own CLI version; mimicry uses the captured
+	// compatibility version. Neither path derives billing version from the
+	// account fingerprint cache.
 	ctMimicUserAgent := claude.DefaultUserAgent()
-	if billingUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUA != "" {
-		body = syncBillingHeaderVersion(body, billingUA)
+	clientBillingUserAgent := ""
+	if clientHeaders != nil {
+		clientBillingUserAgent = clientHeaders.Get("User-Agent")
+	}
+	if billingUserAgent := effectiveRequestBillingUserAgent(ctMimicUserAgent, clientBillingUserAgent, tokenType, mimicClaudeCode); billingUserAgent != "" {
+		body = syncBillingHeaderVersion(body, billingUserAgent, c)
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===

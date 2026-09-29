@@ -118,18 +118,17 @@ func floorClaudeCLIUserAgentVersion(ua string) (string, bool) {
 	return floored, true
 }
 
-// defaultFingerprint 返回默认指纹值（当客户端未提供时使用）。
-// UserAgent 不能在包 init 时固化：必须在每次使用时经 EffectiveCLIVersion 现取，
-// 否则运行期同步到新版本后，新建账号会写入过期版本作为持久身份。
+// defaultFingerprint uses the same captured profile as mimic headers when
+// the client provides no value. Existing client-derived cache values remain intact.
 func defaultFingerprint() Fingerprint {
 	return Fingerprint{
 		UserAgent:               claude.DefaultUserAgent(),
 		StainlessLang:           "js",
-		StainlessPackageVersion: "0.94.0",
-		StainlessOS:             "Linux",
-		StainlessArch:           "arm64",
-		StainlessRuntime:        "node",
-		StainlessRuntimeVersion: "v24.3.0",
+		StainlessPackageVersion: claude.StainlessPackageVersion,
+		StainlessOS:             claude.StainlessOS,
+		StainlessArch:           claude.StainlessArch,
+		StainlessRuntime:        claude.StainlessRuntime,
+		StainlessRuntimeVersion: claude.StainlessRuntimeVersion,
 	}
 }
 

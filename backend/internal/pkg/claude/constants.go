@@ -109,6 +109,16 @@ func FullClaudeCodeMimicryBetas() []string {
 	}
 }
 
+// Mimic defaults captured from the user's local Node runtime. These are a
+// fixed compatibility profile, not a claim about the Go server's runtime.
+const (
+	StainlessOS             = "Windows"
+	StainlessArch           = "x64"
+	StainlessRuntime        = "node"
+	StainlessRuntimeVersion = "v22.19.0"
+	StainlessPackageVersion = "0.112.1"
+)
+
 // DefaultHeaders 是 Claude Code 客户端默认请求头。
 // 每次调用现构造：User-Agent 走 DefaultUserAgent()（运行期可变版本号），
 // 不再在包 init 时固化。同一次请求内应只取一次 UA 字符串并在出站头与
@@ -120,11 +130,11 @@ func DefaultHeaders() map[string]string {
 		// 版本参考：对齐 Parrot (src/transform/cc_mimicry.py:49) 的 CLI_USER_AGENT。
 		"User-Agent":                                DefaultUserAgent(),
 		"X-Stainless-Lang":                          "js",
-		"X-Stainless-Package-Version":               "0.112.1",
-		"X-Stainless-OS":                            "Linux",
-		"X-Stainless-Arch":                          "arm64",
-		"X-Stainless-Runtime":                       "node",
-		"X-Stainless-Runtime-Version":               "v24.3.0",
+		"X-Stainless-Package-Version":               StainlessPackageVersion,
+		"X-Stainless-OS":                            StainlessOS,
+		"X-Stainless-Arch":                          StainlessArch,
+		"X-Stainless-Runtime":                       StainlessRuntime,
+		"X-Stainless-Runtime-Version":               StainlessRuntimeVersion,
 		"X-Stainless-Retry-Count":                   "0",
 		"X-Stainless-Timeout":                       "600",
 		"X-App":                                     "cli",

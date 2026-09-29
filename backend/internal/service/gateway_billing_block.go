@@ -4,42 +4,80 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
 
-// fingerprintSalt 是计算 cc_version 后缀指纹的盐值。
-//
-// 来源：与 Parrot src/transform/cc_mimicry.py 的 FINGERPRINT_SALT 完全一致；
-// 这是真实 Claude Code CLI 抓包推导出的常量，改动会导致 fp 与 CLI 不一致，
-// 进一步触发 Anthropic 的第三方检测。
+// fingerprintSalt matches the supplied Claude Code 2.1.283 Vbe implementation.
 const fingerprintSalt = "59cf53e54c78"
 
-// computeClaudeCodeFingerprint 复刻真实 Claude Code CLI 的 cc_version 指纹算法：
-//
-//  1. 取 messages 中第一条 role=user 的纯文本（首块 text）
-//  2. 取该文本的第 4、7、20 字符（不足以 '0' 补齐）
-//  3. SHA256(SALT + chars + cc_version) 取 hex 前 3 字符
-//
-// 算法来自 Parrot src/transform/cc_mimicry.py:compute_fingerprint，与官方 CLI 字节对齐。
-// 任何偏差都会导致 cc_version=X.Y.Z.{fp} 在上游侧与真实 CLI 不一致。
+// computeClaudeCodeFingerprint 复刻真实 Claude Code CLI 的 cc_version 指纹算法。
+// 官方 JavaScript 以 UTF-16 code unit 访问 text[4], text[7], text[20]；Go
+// 字符串下标是 UTF-8 byte，因此不能直接用 firstText[i]。
 func computeClaudeCodeFingerprint(body []byte, version string) string {
-	firstText := extractFirstUserText(body)
-	indices := []int{4, 7, 20}
-	chars := make([]byte, 0, 3)
-	for _, i := range indices {
-		if i < len(firstText) {
-			chars = append(chars, firstText[i])
-		} else {
-			chars = append(chars, '0')
+	return computeClaudeCodeFingerprintFromText(extractFirstUserText(body), version)
+}
+
+func computeClaudeCodeFingerprintFromText(firstText, version string) string {
+	var units [3]uint16
+	for n, index := range [...]int{4, 7, 20} {
+		unit, ok := javascriptUTF16CodeUnitAt(firstText, index)
+		if !ok {
+			unit = '0'
 		}
+		units[n] = unit
 	}
-	sum := sha256.Sum256([]byte(fingerprintSalt + string(chars) + version))
+	input := make([]byte, 0, len(fingerprintSalt)+len(version)+12)
+	input = append(input, fingerprintSalt...)
+	// JS joins sampled code units before UTF-8 encoding: adjacent sampled
+	// surrogate halves can form a pair even if separated in the source text.
+	for i := 0; i < len(units); i++ {
+		r := rune(units[i])
+		if r >= 0xD800 && r <= 0xDBFF && i+1 < len(units) && units[i+1] >= 0xDC00 && units[i+1] <= 0xDFFF {
+			r = utf16.DecodeRune(r, rune(units[i+1]))
+			i++
+		} else if utf16.IsSurrogate(r) {
+			r = utf8.RuneError
+		}
+		input = utf8.AppendRune(input, r)
+	}
+	input = append(input, version...)
+	sum := sha256.Sum256(input)
 	return hex.EncodeToString(sum[:])[:3]
 }
 
-// extractFirstUserText 提取 messages 中第一条 user 消息的首段 text 内容。
-// 兼容 string 和 []block 两种 content 格式。
+func javascriptUTF16CodeUnitAt(text string, index int) (uint16, bool) {
+	if index < 0 {
+		return 0, false
+	}
+	position := 0
+	for _, r := range text {
+		if r <= 0xFFFF {
+			if position == index {
+				return uint16(r), true
+			}
+			position++
+			continue
+		}
+		value := r - 0x10000
+		high := uint16(0xD800 + (value >> 10))
+		low := uint16(0xDC00 + (value & 0x3FF))
+		if position == index {
+			return high, true
+		}
+		position++
+		if position == index {
+			return low, true
+		}
+		position++
+	}
+	return 0, false
+}
+
+// extractFirstUserText 提取 messages 中第一条非 meta user 消息的首段 text 内容。
+// 兼容 string 和 []block 两种 content 格式；isMeta/is_meta 消息与官方 CLI 一样跳过。
 func extractFirstUserText(body []byte) string {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
@@ -47,7 +85,7 @@ func extractFirstUserText(body []byte) string {
 	}
 	first := ""
 	messages.ForEach(func(_, msg gjson.Result) bool {
-		if msg.Get("role").String() != "user" {
+		if msg.Get("role").String() != "user" || msg.Get("isMeta").Bool() || msg.Get("is_meta").Bool() {
 			return true
 		}
 		content := msg.Get("content")

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -14,25 +15,37 @@ var ccVersionInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+`)
 
 var ccVersionWithFingerprintInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+\.[0-9a-fA-F]{3}\b`)
 
-// effectiveBillingUserAgent 选择写进 x-anthropic-billing-header 的 User-Agent。
-// OAuth mimicry 强制使用调用方传入的 mimicUserAgent（与出站 User-Agent 头同源、
-// 同一次请求内取一次复用，保证 cc_version 与出站头版本严格一致），
-// 其余情况使用账号指纹 UA。
-func effectiveBillingUserAgent(mimicUserAgent, tokenType string, mimicClaudeCode bool, fingerprint *Fingerprint) string {
-	if tokenType == "oauth" && mimicClaudeCode {
-		return mimicUserAgent
+const claudeBillingSourceTextKey = "claude_billing_source_text"
+
+// Capture before proxy system migration. Never infer provenance from text prefixes.
+func captureClaudeBillingSource(c *gin.Context, body []byte) {
+	if c != nil {
+		c.Set(claudeBillingSourceTextKey, extractFirstUserText(body))
 	}
-	if fingerprint == nil {
-		return ""
-	}
-	return fingerprint.UserAgent
 }
 
 // syncBillingHeaderVersion rewrites cc_version in x-anthropic-billing-header
 // system text blocks to match the version extracted from userAgent.
 // Recompute any recognized fingerprint suffix because its input includes the version.
 // Only touches system array blocks whose text starts with "x-anthropic-billing-header".
-func syncBillingHeaderVersion(body []byte, userAgent string) []byte {
+
+// effectiveRequestBillingUserAgent selects the version source for billing
+// synchronization. Real Claude Code uses the request's own CLI UA; mimicry
+// uses the proxy's current compatibility UA. Account fingerprint UA is not a
+// billing-version source.
+func effectiveRequestBillingUserAgent(mimicUserAgent, clientUserAgent, tokenType string, mimicClaudeCode bool) string {
+	if tokenType != "oauth" {
+		return ""
+	}
+	if mimicClaudeCode {
+		return mimicUserAgent
+	}
+	if ExtractCLIVersion(clientUserAgent) != "" {
+		return clientUserAgent
+	}
+	return ""
+}
+func syncBillingHeaderVersion(body []byte, userAgent string, c *gin.Context) []byte {
 	version := ExtractCLIVersion(userAgent)
 	if version == "" {
 		return body
@@ -43,13 +56,22 @@ func syncBillingHeaderVersion(body []byte, userAgent string) []byte {
 		return body
 	}
 
+	firstText := extractFirstUserText(body)
+	if c != nil {
+		if saved, ok := c.Get(claudeBillingSourceTextKey); ok {
+			if savedText, ok := saved.(string); ok {
+				firstText = savedText
+			}
+		}
+	}
+	fingerprint := computeClaudeCodeFingerprintFromText(firstText, version)
 	replacement := "cc_version=" + version
 	idx := 0
 	systemResult.ForEach(func(_, item gjson.Result) bool {
 		text := item.Get("text")
 		if text.Exists() && text.Type == gjson.String &&
 			strings.HasPrefix(text.String(), "x-anthropic-billing-header") {
-			fingerprintedReplacement := replacement + "." + computeClaudeCodeFingerprint(body, version)
+			fingerprintedReplacement := replacement + "." + fingerprint
 			newText := ccVersionWithFingerprintInBillingRe.ReplaceAllString(text.String(), fingerprintedReplacement)
 			newText = ccVersionInBillingRe.ReplaceAllString(newText, replacement)
 			if newText != text.String() {

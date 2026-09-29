@@ -105,6 +105,9 @@ Claude Code 2.1.283 的转发基线应优先保证协议语义，而不是逐字
 - `messages` 与 `count_tokens` 必须保持客户端识别、beta、system 和 provider 路由一致。Vertex service-account 的计数请求走 Vertex Anthropic `count-tokens:rawPredict`。
 - `ProxyID`、`custom_base_url`、Vertex/Bedrock/provider 配置是实际出口选择，必须保留账户级自定义地域和代理；不得用伪造 IP、地区头、遥测或机器标识规避上游策略。
 - 不自动转发 Claude Code 产品遥测，不把代理自己的 user/device ID 注入上游；模型请求上下文、产品遥测和可选 OTEL 详细记录是三条不同数据路径。
+- 真实 Claude Code 的 billing attribution 保留客户端版本和后缀，不再按账号缓存 UA 重算。该保留规则不关闭其他 metadata/fingerprint 设置。
+- OAuth mimic 指纹按 JavaScript UTF-16 下标采样；在 system 迁移前保存原始 user 文本，重试/出站同步仍使用该文本，避免把代理插入的指令当作用户消息。mimic 保留 `cch=00000`。
+- mimic 默认运行环境取自本机 Node 实测：`Windows / x64 / node / v22.19.0`，SDK 版本为提取包中的 `0.112.1`。这是固定兼容配置，不代表部署服务器实际运行 Node；已有账号指纹缓存不自动清空。
 
 本地回归：
 

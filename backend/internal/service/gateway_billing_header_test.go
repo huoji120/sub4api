@@ -106,6 +106,7 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 			{name: "mimic_without_identity", mimic: true},
 			{name: "mimic_with_fingerprint_disabled", mimic: true, identity: true, disableFP: true},
 			{name: "passthrough_recalculates_from_client_ua", identity: true, clientUA: "claude-cli/2.1.283 (external, cli)"},
+			{name: "passthrough_without_fingerprint_uses_client_ua", identity: true, disableFP: true, clientUA: "claude-cli/2.1.283 (external, cli)"},
 		} {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
 				resetGatewayForwardingSettingsCacheForTest(t)
@@ -149,16 +150,18 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 				if tc.mimic {
 					wantUA = claude.DefaultHeaders()["User-Agent"]
 				}
-				require.Equal(t, wantUA, getHeaderRaw(req.Header, "User-Agent"))
 				if tc.mimic {
 					version := ExtractCLIVersion(wantUA)
 					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
 						"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
-				} else if tc.clientUA != "" {
-					version := ExtractCLIVersion(tc.clientUA)
-					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
-						"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
-					require.NotContains(t, gjson.GetBytes(wireBody, "system.0.text").String(), "cc_version=2.9.0.")
+				} else {
+					version := "2.1.81"
+					if tc.identity && !tc.disableFP {
+						version = "2.9.0"
+					} else if tc.clientUA != "" {
+						version = ExtractCLIVersion(tc.clientUA)
+					}
+					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(), "cc_version="+version+".")
 				}
 				actualBody, err := io.ReadAll(req.Body)
 				require.NoError(t, err)

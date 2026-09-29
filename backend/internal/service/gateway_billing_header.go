@@ -30,15 +30,18 @@ func captureClaudeBillingSource(c *gin.Context, body []byte) {
 // Only touches system array blocks whose text starts with "x-anthropic-billing-header".
 
 // effectiveRequestBillingUserAgent selects the version source for billing
-// synchronization. Real Claude Code uses the request's own CLI UA; mimicry
-// uses the proxy's current compatibility UA. Account fingerprint UA is not a
-// billing-version source.
-func effectiveRequestBillingUserAgent(mimicUserAgent, clientUserAgent, tokenType string, mimicClaudeCode bool) string {
+// synchronization. Real Claude Code requests use the OAuth account fingerprint
+// because the upstream account, not the client-side subscription, owns the
+// outbound billing attribution. Mimicry uses the proxy compatibility UA.
+func effectiveRequestBillingUserAgent(mimicUserAgent, clientUserAgent, tokenType string, mimicClaudeCode bool, fingerprint *Fingerprint) string {
 	if tokenType != "oauth" {
 		return ""
 	}
 	if mimicClaudeCode {
 		return mimicUserAgent
+	}
+	if fingerprint != nil && ExtractCLIVersion(fingerprint.UserAgent) != "" {
+		return fingerprint.UserAgent
 	}
 	if ExtractCLIVersion(clientUserAgent) != "" {
 		return clientUserAgent

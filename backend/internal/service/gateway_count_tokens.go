@@ -593,6 +593,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 	}
 
+	billingFingerprint := ctFingerprint
+	if !ctEnableFP {
+		billingFingerprint = nil
+	}
 	// Real Claude Code uses its own CLI version; mimicry uses the captured
 	// compatibility version. Neither path derives billing version from the
 	// account fingerprint cache.
@@ -601,7 +605,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if clientHeaders != nil {
 		clientBillingUserAgent = clientHeaders.Get("User-Agent")
 	}
-	if billingUserAgent := effectiveRequestBillingUserAgent(ctMimicUserAgent, clientBillingUserAgent, tokenType, mimicClaudeCode); billingUserAgent != "" {
+	if billingUserAgent := effectiveRequestBillingUserAgent(ctMimicUserAgent, clientBillingUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUserAgent != "" {
 		body = syncBillingHeaderVersion(body, billingUserAgent, c)
 	}
 

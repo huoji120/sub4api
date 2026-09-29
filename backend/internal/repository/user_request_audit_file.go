@@ -293,17 +293,28 @@ func values(latest map[string]*service.UserRequestAudit, byID map[int64]*service
 	out := make([]*service.UserRequestAudit, 0, len(latest))
 	seen := map[int64]bool{}
 	for _, row := range latest {
+		normalizeConversationKey(row)
 		if !seen[row.ID] {
 			out = append(out, row)
 			seen[row.ID] = true
 		}
 	}
 	for id, row := range byID {
+		normalizeConversationKey(row)
 		if !seen[id] && row.LogicalKey == "" {
 			out = append(out, row)
 		}
 	}
 	return out
+}
+
+func normalizeConversationKey(row *service.UserRequestAudit) {
+	if row == nil || row.ResponseID == "" {
+		return
+	}
+	if strings.HasPrefix(row.ConversationKey, "fallback:") || strings.HasPrefix(row.ConversationKey, "request:") {
+		row.ConversationKey = "response:" + row.ResponseID
+	}
 }
 
 func (r *FileUserRequestAuditRepository) filtered(ctx context.Context, filter service.UserRequestAuditFilter) []*service.UserRequestAudit {

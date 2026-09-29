@@ -46,6 +46,10 @@ func TestFileUserRequestAuditRestartAndComplete(t *testing.T) {
 	if err := r.Create(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}
+	beforeComplete, beforeErr := r.GetByID(context.Background(), a.ID)
+	if beforeErr != nil || beforeComplete.ConversationKey != "request:logical" {
+		t.Fatalf("initial conversation key=%q err=%v", beforeComplete.ConversationKey, beforeErr)
+	}
 	if err := r.Complete(context.Background(), &service.UserRequestAuditCompletion{LogicalKey: "logical", ResponseID: "resp_123", ResponseChatML: "response", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +57,20 @@ func TestFileUserRequestAuditRestartAndComplete(t *testing.T) {
 	got, err := r2.GetByID(context.Background(), a.ID)
 	if err != nil || got.Status != "completed" || got.ResponseID != "resp_123" || got.ConversationKey != "response:resp_123" || got.ResponseChatML != "response" {
 		t.Fatalf("restart got=%+v err=%v", got, err)
+	}
+}
+
+func TestFileUserRequestAuditNormalizesExistingResponseConversationKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	r := NewFileUserRequestAuditRepository(nil)
+	audit := &service.UserRequestAudit{UserID: 1, Protocol: "openai_responses", ResponseID: "resp_existing", FallbackHash: "old", LogicalKey: "legacy", Status: "completed"}
+	if err := r.Create(context.Background(), audit); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.GetByID(context.Background(), audit.ID)
+	if err != nil || got.ConversationKey != "response:resp_existing" {
+		t.Fatalf("normalized conversation key=%q err=%v", got.ConversationKey, err)
 	}
 }
 

@@ -119,7 +119,7 @@ export default adminAPI
 
 // Re-export types used by components
 export type { AuditLog, AuditLogQuery, AuditLogListResponse } from './audit'
-export type { UserRequestAudit, UserRequestAuditQuery, UserRequestAuditConfig } from './userRequestAudit'
+export type { UserRequestAudit, UserRequestAuditQuery, UserRequestAuditConfig, UserRequestAuditStatus, UserRequestAuditGroupStat, UserRequestAuditGroupStatsResponse, UserRequestAuditExportFormat, UserRequestAuditExportResult } from './userRequestAudit'
 export type { BalanceHistoryItem } from './users'
 export type { ErrorPassthroughRule, CreateRuleRequest, UpdateRuleRequest } from './errorPassthrough'
 export type { BackupAgentHealth, DataManagementConfig } from './dataManagement'

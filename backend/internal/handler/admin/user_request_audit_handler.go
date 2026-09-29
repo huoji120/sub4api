@@ -84,7 +84,7 @@ func (h *UserRequestAuditHandler) Get(c *gin.Context) {
 }
 
 func parseUserRequestAuditFilter(c *gin.Context, page, pageSize int) (service.UserRequestAuditFilter, error) {
-	filter := service.UserRequestAuditFilter{Page: page, PageSize: pageSize, Protocol: strings.TrimSpace(c.Query("protocol")), RequestedModel: strings.TrimSpace(c.Query("requested_model")), ResponseID: strings.TrimSpace(c.Query("response_id")), ClientRequestID: strings.TrimSpace(c.Query("client_request_id")), Status: strings.TrimSpace(c.Query("status"))}
+	filter := service.UserRequestAuditFilter{Page: page, PageSize: pageSize, GroupName: strings.TrimSpace(c.Query("group_name")), Protocol: strings.TrimSpace(c.Query("protocol")), RequestedModel: strings.TrimSpace(c.Query("requested_model")), ResponseID: strings.TrimSpace(c.Query("response_id")), ClientRequestID: strings.TrimSpace(c.Query("client_request_id")), Status: strings.TrimSpace(c.Query("status")), Q: strings.TrimSpace(c.Query("q")), Legacy: strings.EqualFold(strings.TrimSpace(c.Query("legacy")), "true")}
 	parseID := func(name string) (*int64, error) {
 		raw := strings.TrimSpace(c.Query(name))
 		if raw == "" {
@@ -127,27 +127,150 @@ func parseUserRequestAuditFilter(c *gin.Context, page, pageSize int) (service.Us
 }
 
 type userRequestAuditConfigRequest struct {
-	RetentionDays int `json:"retention_days" binding:"required"`
+	RetentionDays        int   `json:"retention_days,omitempty"`
+	CleanupIntervalHours int   `json:"cleanup_interval_hours,omitempty"`
+	MaxShardBytes        int64 `json:"max_shard_bytes,omitempty"`
 }
 
 func (h *UserRequestAuditHandler) GetConfig(c *gin.Context) {
-	days, err := h.service.GetRetentionDays(c.Request.Context())
-	if err != nil && days <= 0 {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"retention_days": days})
+	cfg := h.service.GetArchiveConfig()
+	response.Success(c, gin.H{"retention_days": cfg.RetentionDays, "cleanup_interval_hours": cfg.CleanupIntervalHours, "max_shard_bytes": cfg.MaxShardBytes, "storage": h.service.StorageStatus()})
 }
 
 func (h *UserRequestAuditHandler) UpdateConfig(c *gin.Context) {
 	var req userRequestAuditConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "retention_days must be an integer between 1 and 365")
+		response.BadRequest(c, "invalid audit config")
 		return
 	}
-	if err := h.service.SetRetentionDays(c.Request.Context(), req.RetentionDays); err != nil {
+	cfg := h.service.GetArchiveConfig()
+	if req.RetentionDays > 0 {
+		cfg.RetentionDays = req.RetentionDays
+	}
+	if req.CleanupIntervalHours > 0 {
+		cfg.CleanupIntervalHours = req.CleanupIntervalHours
+	}
+	if req.MaxShardBytes > 0 {
+		cfg.MaxShardBytes = req.MaxShardBytes
+	}
+	if err := h.service.SetArchiveConfig(cfg); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	response.Success(c, gin.H{"retention_days": req.RetentionDays})
+	response.Success(c, cfg)
+}
+func (h *UserRequestAuditHandler) Groups(c *gin.Context) {
+	filter, err := parseUserRequestAuditFilter(c, 1, 200)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	stats, err := h.service.GroupStats(c.Request.Context(), filter)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, stats)
+}
+
+func (h *UserRequestAuditHandler) Export(c *gin.Context) {
+	var req struct {
+		Format          string `json:"format"`
+		UserID          *int64 `json:"user_id"`
+		APIKeyID        *int64 `json:"api_key_id"`
+		GroupID         *int64 `json:"group_id"`
+		GroupName       string `json:"group_name"`
+		Protocol        string `json:"protocol"`
+		RequestedModel  string `json:"requested_model"`
+		ResponseID      string `json:"response_id"`
+		ClientRequestID string `json:"client_request_id"`
+		Status          string `json:"status"`
+		Q               string `json:"q"`
+		StartTime       string `json:"start_time"`
+		EndTime         string `json:"end_time"`
+		Legacy          bool   `json:"legacy"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "invalid export request")
+			return
+		}
+	}
+	filter, err := parseUserRequestAuditFilter(c, 1, 200)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if req.UserID != nil {
+		filter.UserID = req.UserID
+	}
+	if req.APIKeyID != nil {
+		filter.APIKeyID = req.APIKeyID
+	}
+	if req.GroupID != nil {
+		filter.GroupID = req.GroupID
+	}
+	if req.GroupName != "" {
+		filter.GroupName = req.GroupName
+	}
+	if req.Protocol != "" {
+		filter.Protocol = req.Protocol
+	}
+	if req.RequestedModel != "" {
+		filter.RequestedModel = req.RequestedModel
+	}
+	if req.ResponseID != "" {
+		filter.ResponseID = req.ResponseID
+	}
+	if req.ClientRequestID != "" {
+		filter.ClientRequestID = req.ClientRequestID
+	}
+	if req.Status != "" {
+		filter.Status = req.Status
+	}
+	if req.Q != "" {
+		filter.Q = req.Q
+	}
+	if req.Legacy {
+		filter.Legacy = true
+	}
+	parseBodyTime := func(raw string) (*time.Time, error) {
+		if strings.TrimSpace(raw) == "" {
+			return nil, nil
+		}
+		v, e := time.Parse(time.RFC3339, raw)
+		return &v, e
+	}
+	if req.StartTime != "" {
+		filter.StartTime, err = parseBodyTime(req.StartTime)
+		if err != nil {
+			response.BadRequest(c, "invalid start_time")
+			return
+		}
+	}
+	if req.EndTime != "" {
+		filter.EndTime, err = parseBodyTime(req.EndTime)
+		if err != nil {
+			response.BadRequest(c, "invalid end_time")
+			return
+		}
+	}
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	if format != "json" {
+		format = "jsonl"
+	}
+	c.Header("Content-Type", "application/"+format)
+	c.Header("Content-Disposition", `attachment; filename="user-request-audit.`+format+`"`)
+	_, _ = h.service.StreamExport(c.Request.Context(), filter, format, c.Writer)
+}
+func (h *UserRequestAuditHandler) Status(c *gin.Context) {
+	response.Success(c, h.service.StorageStatus())
+}
+func (h *UserRequestAuditHandler) Cleanup(c *gin.Context) {
+	deleted, err := h.service.CleanupNow(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"deleted": deleted, "storage": h.service.StorageStatus()})
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -79,11 +80,14 @@ type UserRequestAuditFilter struct {
 	UserID          *int64
 	APIKeyID        *int64
 	GroupID         *int64
+	GroupName       string
 	Protocol        string
 	RequestedModel  string
 	ResponseID      string
 	ClientRequestID string
 	Status          string
+	Q               string
+	Legacy          bool
 	StartTime       *time.Time
 	EndTime         *time.Time
 }
@@ -112,13 +116,15 @@ type UserRequestAuditCapture struct {
 }
 
 type UserRequestAuditService struct {
-	repo      UserRequestAuditRepository
-	settings  SettingRepository
-	queue     chan func(context.Context)
-	stop      chan struct{}
-	done      chan struct{}
-	startOnce sync.Once
-	stopOnce  sync.Once
+	repo          UserRequestAuditRepository
+	settings      SettingRepository
+	queue         chan func(context.Context)
+	stop          chan struct{}
+	done          chan struct{}
+	startOnce     sync.Once
+	stopOnce      sync.Once
+	cleanupMu     sync.Mutex
+	lastCleanupAt time.Time
 }
 
 func NewUserRequestAuditService(repo UserRequestAuditRepository, settings SettingRepository) *UserRequestAuditService {
@@ -161,6 +167,16 @@ func (s *UserRequestAuditService) run() {
 		case task := <-s.queue:
 			s.runTask(task, 5*time.Second)
 		case <-ticker.C:
+			s.cleanupMu.Lock()
+			cfg := s.GetArchiveConfig()
+			due := s.lastCleanupAt.IsZero() || time.Since(s.lastCleanupAt) >= time.Duration(cfg.CleanupIntervalHours)*time.Hour
+			if due {
+				s.lastCleanupAt = time.Now().UTC()
+			}
+			s.cleanupMu.Unlock()
+			if !due {
+				continue
+			}
 			if deleted, err := s.cleanup(context.Background()); err != nil {
 				slog.Warn("user_request_audit.cleanup_failed", "error", err)
 			} else if deleted > 0 {
@@ -270,6 +286,209 @@ func (s *UserRequestAuditService) GetByID(ctx context.Context, id int64) (*UserR
 		return nil, sql.ErrNoRows
 	}
 	return s.repo.GetByID(ctx, id)
+}
+
+type UserRequestAuditGroupStat struct {
+	GroupID     *int64    `json:"group_id,omitempty"`
+	GroupName   string    `json:"group_name,omitempty"`
+	Count       int64     `json:"count"`
+	Completed   int64     `json:"completed"`
+	Failed      int64     `json:"failed"`
+	InputTotal  int64     `json:"input_total"`
+	OutputTotal int64     `json:"output_total"`
+	LatestAt    time.Time `json:"latest_at"`
+}
+
+const userRequestAuditMaxExportRows = 10000
+
+func (s *UserRequestAuditService) GroupStats(ctx context.Context, filter UserRequestAuditFilter) ([]UserRequestAuditGroupStat, error) {
+	filter.Page, filter.PageSize = 1, 200
+	groups := make(map[string]*UserRequestAuditGroupStat)
+	seen := 0
+	for {
+		rows, total, err := s.List(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			key := "none:" + row.GroupName
+			if row.GroupID != nil {
+				key = fmt.Sprintf("%d:%s", *row.GroupID, row.GroupName)
+			}
+			stat := groups[key]
+			if stat == nil {
+				stat = &UserRequestAuditGroupStat{GroupID: cloneAuditGroupID(row.GroupID), GroupName: row.GroupName}
+				groups[key] = stat
+			}
+			stat.Count++
+			switch strings.ToLower(row.Status) {
+			case "completed", "success", "succeeded":
+				stat.Completed++
+			case "failed", "error":
+				stat.Failed++
+			}
+			stat.InputTotal += auditUsageNumber(row.InputUsage, "input_tokens", "input")
+			stat.OutputTotal += auditUsageNumber(row.OutputUsage, "output_tokens", "output")
+			if row.CreatedAt.After(stat.LatestAt) {
+				stat.LatestAt = row.CreatedAt
+			}
+			seen++
+		}
+		if len(rows) == 0 || seen >= int(total) || seen >= userRequestAuditMaxExportRows {
+			break
+		}
+		filter.Page++
+	}
+	out := make([]UserRequestAuditGroupStat, 0, len(groups))
+	for _, stat := range groups {
+		out = append(out, *stat)
+	}
+	return out, nil
+}
+
+func (s *UserRequestAuditService) StreamExport(ctx context.Context, filter UserRequestAuditFilter, format string, w io.Writer) (int, error) {
+	if format != "json" {
+		format = "jsonl"
+	}
+	enc := json.NewEncoder(w)
+	written := 0
+	first := true
+	if format == "json" {
+		if _, err := io.WriteString(w, "["); err != nil {
+			return 0, err
+		}
+	}
+	defer func() {
+		if format == "json" {
+			_, _ = io.WriteString(w, "]")
+		}
+	}()
+	filter.Page, filter.PageSize = 1, 200
+	for written < userRequestAuditMaxExportRows {
+		rows, total, err := s.List(ctx, filter)
+		if err != nil {
+			return written, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			if written >= userRequestAuditMaxExportRows {
+				break
+			}
+			if format == "jsonl" {
+				if err := enc.Encode(row); err != nil {
+					return written, err
+				}
+			} else {
+				if !first {
+					if _, err := io.WriteString(w, ","); err != nil {
+						return written, err
+					}
+				}
+				first = false
+				b, err := json.Marshal(row)
+				if err != nil {
+					return written, err
+				}
+				if _, err = w.Write(b); err != nil {
+					return written, err
+				}
+			}
+			written++
+		}
+		if written >= int(total) || len(rows) < filter.PageSize {
+			break
+		}
+		filter.Page++
+	}
+	return written, nil
+}
+
+func auditUsageNumber(values map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		if v, ok := values[key]; ok {
+			switch n := v.(type) {
+			case float64:
+				return int64(n)
+			case int:
+				return int64(n)
+			case int64:
+				return n
+			case json.Number:
+				i, _ := n.Int64()
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+type UserRequestAuditStorageStatus struct {
+	TotalBytes        int64     `json:"total_bytes"`
+	FileCount         int       `json:"file_count"`
+	CurrentShardBytes int64     `json:"current_shard_bytes"`
+	Oldest            time.Time `json:"oldest_at,omitempty"`
+	Latest            time.Time `json:"latest_at,omitempty"`
+	LastCleanup       time.Time `json:"last_cleanup_at,omitempty"`
+}
+type userRequestAuditStatusRepo interface {
+	StorageStatus() UserRequestAuditStorageStatus
+}
+
+func (s *UserRequestAuditService) StorageStatus() UserRequestAuditStorageStatus {
+	if s != nil {
+		if r, ok := s.repo.(userRequestAuditStatusRepo); ok {
+			return r.StorageStatus()
+		}
+	}
+	return UserRequestAuditStorageStatus{}
+}
+func (s *UserRequestAuditService) CleanupNow(ctx context.Context) (int64, error) {
+	return s.cleanup(ctx)
+}
+
+type UserRequestAuditConfig struct {
+	RetentionDays        int   `json:"retention_days"`
+	CleanupIntervalHours int   `json:"cleanup_interval_hours"`
+	MaxShardBytes        int64 `json:"max_shard_bytes"`
+}
+
+const UserRequestAuditDefaultCleanupIntervalHours = 24
+const UserRequestAuditDefaultMaxShardBytes int64 = 64 * 1024 * 1024
+
+type userRequestAuditConfigRepo interface {
+	GetAuditConfig() UserRequestAuditConfig
+	SetAuditConfig(UserRequestAuditConfig) error
+}
+
+func (s *UserRequestAuditService) GetArchiveConfig() UserRequestAuditConfig {
+	cfg := UserRequestAuditConfig{RetentionDays: s.retentionDays(), CleanupIntervalHours: UserRequestAuditDefaultCleanupIntervalHours, MaxShardBytes: UserRequestAuditDefaultMaxShardBytes}
+	if r, ok := s.repo.(userRequestAuditConfigRepo); ok {
+		x := r.GetAuditConfig()
+		if x.CleanupIntervalHours > 0 {
+			cfg.CleanupIntervalHours = x.CleanupIntervalHours
+		}
+		if x.MaxShardBytes > 0 {
+			cfg.MaxShardBytes = x.MaxShardBytes
+		}
+	}
+	return cfg
+}
+func (s *UserRequestAuditService) SetArchiveConfig(cfg UserRequestAuditConfig) error {
+	if cfg.CleanupIntervalHours < 1 || cfg.CleanupIntervalHours > 168 {
+		return fmt.Errorf("cleanup interval must be between 1 and 168 hours")
+	}
+	if cfg.MaxShardBytes < 8*1024*1024 || cfg.MaxShardBytes > 256*1024*1024 {
+		return fmt.Errorf("max shard bytes must be between 8MiB and 256MiB")
+	}
+	if err := s.SetRetentionDays(context.Background(), cfg.RetentionDays); err != nil {
+		return err
+	}
+	if r, ok := s.repo.(userRequestAuditConfigRepo); ok {
+		return r.SetAuditConfig(cfg)
+	}
+	return nil
 }
 
 func (s *UserRequestAuditService) GetRetentionDays(ctx context.Context) (int, error) {

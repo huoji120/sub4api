@@ -155,6 +155,10 @@ func registerUserRequestAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers)
 	audits.GET("", h.Admin.UserRequestAudit.List)
 	audits.GET("/config", h.Admin.UserRequestAudit.GetConfig)
 	audits.PUT("/config", h.Admin.UserRequestAudit.UpdateConfig)
+	audits.GET("/groups", h.Admin.UserRequestAudit.Groups)
+	audits.GET("/status", h.Admin.UserRequestAudit.Status)
+	audits.POST("/cleanup", h.Admin.UserRequestAudit.Cleanup)
+	audits.POST("/export", h.Admin.UserRequestAudit.Export)
 	audits.GET("/:id", h.Admin.UserRequestAudit.Get)
 }
 

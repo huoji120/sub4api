@@ -13,6 +13,7 @@ import (
 
 	"github.com/MACOS-DO/sub4api/internal/pkg/apicompat"
 	"github.com/MACOS-DO/sub4api/internal/pkg/logger"
+	"github.com/MACOS-DO/sub4api/internal/pkg/openai"
 	"github.com/MACOS-DO/sub4api/internal/pkg/openai_compat"
 	"github.com/MACOS-DO/sub4api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -205,6 +206,13 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61SolCompatRequest(body, upstreamModel, billingModel); err != nil {
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	if openai.IsGPT61SolModelSpelling(upstreamModel) && chatReq.ReasoningEffort == "" {
+		chatReq.ReasoningEffort = deriveOpenAIReasoningEffortFromModelCandidates([]string{originalModel, billingModel})
+	}
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
@@ -235,6 +243,11 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		err           error
 	)
 	if isResponsesShape {
+		body, _, err = normalizeGPT61SolResponsesRequest(body, billingModel)
+		if err != nil {
+			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
 		responsesBody, err = sjson.SetBytes(body, "model", upstreamModel)
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model in responses-shape body: %w", err)

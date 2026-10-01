@@ -1433,7 +1433,6 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         store: false
       },
       variants: {
-        none: {},
         low: {},
         medium: {},
         high: {},

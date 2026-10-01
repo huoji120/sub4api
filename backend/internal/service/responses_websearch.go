@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -723,6 +724,7 @@ func parseResponsesWebSearchRound(data []byte) (map[string]json.RawMessage, erro
 	var payload []byte
 	var terminal map[string]json.RawMessage
 	var streamError string
+	var completedItems map[int]json.RawMessage
 	consume := func() {
 		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 			payload = payload[:0]
@@ -732,6 +734,14 @@ func parseResponsesWebSearchRound(data []byte) (map[string]json.RawMessage, erro
 		if json.Unmarshal(payload, &event) == nil {
 			kind := gjson.GetBytes(event["type"], "@this").String()
 			switch kind {
+			case "response.output_item.done":
+				var index int
+				if json.Unmarshal(event["output_index"], &index) == nil && index >= 0 && gjson.GetBytes(event["item"], "@this").IsObject() {
+					if completedItems == nil {
+						completedItems = make(map[int]json.RawMessage)
+					}
+					completedItems[index] = event["item"]
+				}
 			case "response.completed", "response.incomplete", "response.failed", "response.done":
 				var parsed map[string]json.RawMessage
 				if json.Unmarshal(event["response"], &parsed) == nil && parsed != nil {
@@ -763,6 +773,20 @@ func parseResponsesWebSearchRound(data []byte) (map[string]json.RawMessage, erro
 		return nil, err
 	}
 	if terminal != nil {
+		// Codex can leave terminal.output empty after sending complete items.
+		// Restore those items without replacing an authoritative terminal output.
+		var finalItems []json.RawMessage
+		if len(completedItems) > 0 && (len(terminal["output"]) == 0 || json.Unmarshal(terminal["output"], &finalItems) == nil) && len(finalItems) == 0 {
+			indices := make([]int, 0, len(completedItems))
+			for index := range completedItems {
+				indices = append(indices, index)
+			}
+			sort.Ints(indices)
+			for _, index := range indices {
+				finalItems = append(finalItems, completedItems[index])
+			}
+			terminal["output"] = rawResponsesSearchJSON(finalItems)
+		}
 		return terminal, nil
 	}
 	if streamError != "" {

@@ -33,6 +33,7 @@ func (s *OpenAIGatewayService) forwardWithoutHostedWebSearch(ctx context.Context
 	}
 	beginUpstreamResponseModelObservation(c)
 	body = normalizeOpenAIRequestLocale(ctx, account, body, "http")
+	originalReasoningBody := body
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
@@ -93,7 +94,7 @@ func (s *OpenAIGatewayService) forwardWithoutHostedWebSearch(ctx context.Context
 	} else if toolSchemaSanitized {
 		body = sanitizedToolBody
 	}
-	if account.IsOpenAIOAuthLike() {
+	if account.IsOpenAIOAuthLike() && !openai.IsGPT61SolModelSpelling(account.GetMappedModel(gjson.GetBytes(body, "model").String())) {
 		reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(body, account.GetMappedModel(gjson.GetBytes(body, "model").String()))
 		if reasoningErr != nil {
 			return nil, fmt.Errorf("normalize OpenAI Responses reasoning.mode: %w", reasoningErr)
@@ -162,6 +163,25 @@ func (s *OpenAIGatewayService) forwardWithoutHostedWebSearch(ctx context.Context
 		setOpenAIResponsesClientToolMapping(c, mapping)
 	}
 
+	if !passthroughEnabled {
+		requested := gjson.GetBytes(body, "model").String()
+		billingModel, mapped := resolveOpenAIForwardMappedModels(account, requested, compactPath)
+		if compactPath {
+			if fallback := s.resolveOpenAICompactFallbackModel(account, requested); fallback != "" {
+				mapped = fallback
+			}
+		}
+		if err := validateGPT61SolCompatRequest(originalReasoningBody, mapped, billingModel); err != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
+		if normalized, _, err := normalizeGPT61SolResponsesRequest(body, mapped, billingModel); err != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		} else {
+			body = normalized
+		}
+	}
 	originalBody := body
 	rememberOpenCodeInboundBody(c, originalBody)
 	requestView := newOpenAIRequestView(body)

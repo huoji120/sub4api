@@ -50,3 +50,15 @@ func TestGPT61SolModelIdentity(t *testing.T) {
 	require.True(t, IsGPT6SolFamilyModelSpelling("gpt-6.1-sol"))
 	require.False(t, IsGPT61SolModelSpelling("gpt-6.1-sol-preview"))
 }
+
+func TestGPT61SolRejectsDisabledReasoning(t *testing.T) {
+	for _, effort := range []string{"", "low", "medium", "high", "xhigh", "max"} {
+		require.NoError(t, ValidateGPT61SolReasoningEffort("gpt-6.1-sol", effort))
+	}
+	for _, effort := range []string{"none", "minimal", " NONE "} {
+		require.ErrorContains(t, ValidateGPT61SolReasoningEffort("openai/gpt-6.1-sol", effort), "does not support reasoning effort")
+		require.NoError(t, ValidateGPT61SolReasoningEffort("gpt-6-sol", effort))
+	}
+	require.True(t, IsGPT61SolModelSpelling("GPT_6.1_SOL-minimal"))
+	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6.1-sol"))
+}

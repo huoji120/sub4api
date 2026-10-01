@@ -361,15 +361,18 @@ type configuredCodexServiceTier struct {
 }
 
 type configuredCodexModelMessages struct {
-	InstructionsTemplate  string `json:"instructions_template"`
-	InstructionsVariables any    `json:"instructions_variables"`
-	Approvals             any    `json:"approvals"`
-	CollaborationModes    any    `json:"collaboration_modes"`
-	AutoReview            any    `json:"auto_review"`
-	Permissions           any    `json:"permissions"`
-	MultiAgent            any    `json:"multi_agent"`
-	TokenBudget           any    `json:"token_budget"`
-	GuardianV2            any    `json:"guardian_v2"`
+	InstructionsTemplate   string          `json:"instructions_template"`
+	InstructionsVariables  any             `json:"instructions_variables"`
+	Approvals              any             `json:"approvals"`
+	CollaborationModes     any             `json:"collaboration_modes"`
+	AutoReview             any             `json:"auto_review"`
+	Permissions            any             `json:"permissions"`
+	MultiAgent             any             `json:"multi_agent"`
+	TokenBudget            any             `json:"token_budget"`
+	GuardianV2             any             `json:"guardian_v2"`
+	PersistentInstructions json.RawMessage `json:"persistent_instructions,omitempty"`
+	Tools                  json.RawMessage `json:"tools,omitempty"`
+	ConfirmationPolicies   json.RawMessage `json:"confirmation_policies,omitempty"`
 }
 
 // configuredCodexModelDescriptor is the minimum complete ModelInfo contract
@@ -420,6 +423,14 @@ type configuredCodexModelDescriptor struct {
 	ModelSpecialty                    any                             `json:"model_specialty"`
 	ToolMode                          any                             `json:"tool_mode"`
 	MultiAgentVersion                 any                             `json:"multi_agent_version"`
+	PreferWebsockets                  json.RawMessage                 `json:"prefer_websockets,omitempty"`
+	Guardian                          json.RawMessage                 `json:"guardian,omitempty"`
+	RequiresSandboxedReview           json.RawMessage                 `json:"requires_sandboxed_review,omitempty"`
+	MinimalClientVersion              json.RawMessage                 `json:"minimal_client_version,omitempty"`
+	AvailableInPlans                  json.RawMessage                 `json:"available_in_plans,omitempty"`
+	SupportsExperimentalContext       json.RawMessage                 `json:"supports_experimental_context,omitempty"`
+	SupportsReasoningSummaries        json.RawMessage                 `json:"supports_reasoning_summaries,omitempty"`
+	SupportsReasoningEffortUpdates    json.RawMessage                 `json:"supports_reasoning_effort_updates,omitempty"`
 }
 
 type codexModelMetadataOverride struct {
@@ -428,8 +439,23 @@ type codexModelMetadataOverride struct {
 	inputModalitiesConflict bool
 }
 
+// Parse the embedded descriptor once. Callers replace capability slices/pointers,
+// never mutate their shared contents, so copying the descriptor is sufficient.
+var configuredCodexGPT61SolDescriptor = func() configuredCodexModelDescriptor {
+	descriptor := configuredCodexModelDescriptor{EffectiveContextWindowPercent: 95}
+	if err := json.Unmarshal(openai.CodexGPT61SolMetadata, &descriptor); err != nil {
+		panic(err)
+	}
+	return descriptor
+}()
+
 func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescriptor {
 	modelID = strings.TrimSpace(modelID)
+	if openai.IsGPT61SolModelSpelling(modelID) {
+		descriptor := configuredCodexGPT61SolDescriptor
+		descriptor.Slug = modelID
+		return descriptor
+	}
 	noReasoningLevel := "none"
 	descriptor := configuredCodexModelDescriptor{
 		Slug:                  modelID,
@@ -2081,6 +2107,7 @@ func CodexModelsManifestETag(body []byte) string {
 }
 
 var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
+	"gpt-6.1-sol":   {},
 	"gpt-6-astra":   {},
 	"gpt-5.6-sol":   {},
 	"gpt-5.6-terra": {},

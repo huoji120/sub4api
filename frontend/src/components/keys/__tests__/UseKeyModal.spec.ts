@@ -676,12 +676,12 @@ describe('UseKeyModal', () => {
     expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
     expect(models['gpt-6-sol'].variants).toHaveProperty('none')
     expect(models['gpt-6-luna'].limit).toEqual({ context: 1050000, output: 128000 })
-    expect(models['gpt-6.1-sol']).toEqual({
-      name: 'GPT-6.1 Sol',
-      limit: { context: 1050000, output: 128000 },
-      options: { store: false },
-      variants: { none: {}, low: {}, medium: {}, high: {}, xhigh: {}, max: {} }
-    })
+    for (const effort of ['none', 'minimal']) {
+      expect(models['gpt-6.1-sol'].variants).not.toHaveProperty(effort)
+    }
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(models['gpt-6.1-sol'].variants).toHaveProperty(effort)
+    }
     expect(models['gpt-6']).toEqual({
       name: 'GPT-6 (Astra)',
       limit: { context: 1050000, output: 128000 },

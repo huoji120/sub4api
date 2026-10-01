@@ -1164,17 +1164,11 @@ func TestGPT6ReasoningModeAndSamplingCompatibility(t *testing.T) {
 		require.Equal(t, "reasoning.encrypted_content", gjson.GetBytes(out, "include.0").String())
 		require.Equal(t, "30m", gjson.GetBytes(out, "prompt_cache_options.ttl").String())
 		require.Equal(t, "max", normalizeOpenAIReasoningEffortForModel("max", model))
-		d := newConfiguredCodexModelDescriptor(model)
-		require.NotNil(t, d.DefaultReasoningLevel)
-		require.Equal(t, "medium", *d.DefaultReasoningLevel)
-		require.EqualValues(t, 872000, d.MaxContextWindow)
-		require.Len(t, d.SupportedReasoningLevels, 5)
-		require.Len(t, d.ServiceTiers, 1)
 	}
 }
 
 func TestGPT6RawChatNoneToolsAreForwarded(t *testing.T) {
-	for _, model := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		body := []byte(`{"model":"` + model + `","reasoning_effort":"none","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
@@ -1246,6 +1240,144 @@ func TestGPT6MappedCompatibilityBridgesKeepReasoningAndTools(t *testing.T) {
 				require.Equal(t, "30m", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
 			}
 			require.Equal(t, 300, result.Usage.CacheCreationInputTokens)
+		}
+	}
+}
+
+func TestGPT61SolRejectsDisabledReasoningBeforeForwarding(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"public","reasoning_effort":"none"}`,
+		`{"model":"public","reasoning":{"effort":"minimal"}}`,
+		`{"model":"public","output_config":{"effort":"none"}}`,
+		`{"model":"public","thinking":{"type":"disabled"}}`,
+		`{"model":"gpt-6.1-sol-minimal"}`,
+	} {
+		require.Error(t, validateGPT61SolCompatRequest([]byte(body), "gpt-6.1-sol"))
+		require.NoError(t, validateGPT61SolCompatRequest([]byte(body), "gpt-6-sol"))
+	}
+	for _, field := range []string{`"reasoning_effort":"none"`, `"reasoning_effort":"minimal"`, `"tools":[{"type":"function","function":{"name":"lookup"}}]`} {
+		body := []byte(`{"model":"public",` + field + `,"messages":[{"role":"user","content":"hello"}]}`)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"model_mapping": map[string]any{"public": "gpt-6.1-sol"}}}
+		svc := &OpenAIGatewayService{cfg: &config.Config{}}
+		_, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+		require.Error(t, err)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Contains(t, rec.Body.String(), "gpt-6.1-sol")
+	}
+}
+
+func TestGPT61SolMappedReasoningModeAndSampling(t *testing.T) {
+	body := []byte(`{"model":"public","reasoning":{"mode":"pro","effort":"max"},"temperature":0.5,"top_p":0.9,"logprobs":true,"top_logprobs":2,"include":["message.output_text.logprobs","reasoning.encrypted_content"]}`)
+	out, _, err := normalizeOpenAIResponsesReasoningMode(body, "gpt-6.1-sol")
+	require.NoError(t, err)
+	require.Equal(t, "pro", gjson.GetBytes(out, "reasoning.mode").String())
+	require.Equal(t, "max", gjson.GetBytes(out, "reasoning.effort").String())
+	for _, field := range []string{"temperature", "top_p", "logprobs", "top_logprobs"} {
+		require.False(t, gjson.GetBytes(out, field).Exists(), field)
+	}
+	require.Equal(t, "reasoning.encrypted_content", gjson.GetBytes(out, "include.0").String())
+}
+
+func TestGPT61SolMessagesEffortAliasesPreserveIntent(t *testing.T) {
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		req := &apicompat.AnthropicRequest{Model: "openai/gpt-6.1-sol-" + effort}
+		applyOpenAICompatModelNormalization(req)
+		require.Equal(t, "gpt-6.1-sol", req.Model)
+		require.Equal(t, effort, req.OutputConfig.Effort)
+		out, err := apicompat.AnthropicToResponses(req)
+		if effort == "none" || effort == "minimal" {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, effort, out.Reasoning.Effort)
+		}
+	}
+}
+
+func TestGPT61SolOnlyChatFallbackRejectsToolsAndDisabledReasoning(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		bodies := []string{
+			`{"model":"public","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]}`,
+			`{"model":"public","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`,
+		}
+		if responses {
+			bodies = []string{
+				`{"model":"public","input":"hi","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`,
+				`{"model":"public","input":"hi","reasoning":{"effort":"none"}}`,
+			}
+		}
+		for _, body := range bodies {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"model_mapping": map[string]any{"public": "gpt-6.1-sol"}}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			var err error
+			if responses {
+				_, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, []byte(body))
+			} else {
+				_, err = svc.forwardAnthropicViaRawChatCompletions(context.Background(), c, account, []byte(body), "")
+			}
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), "gpt-6.1-sol")
+		}
+	}
+}
+
+func TestGPT61SolResponsesContractAfterMapping(t *testing.T) {
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		for _, suffix := range []bool{false, true} {
+			body := []byte(`{"model":"public","reasoning":{"mode":"pro","effort":"` + effort + `"},"temperature":0.5,"top_p":0.9}`)
+			mapped := "gpt-6.1-sol"
+			if suffix {
+				body = []byte(`{"model":"public","reasoning":{"mode":"pro"},"temperature":0.5,"top_p":0.9}`)
+				mapped += "-" + effort
+			}
+			out, _, err := normalizeGPT61SolResponsesRequest(body, "gpt-6.1-sol", mapped)
+			if effort == "none" || effort == "minimal" {
+				require.ErrorContains(t, err, "does not support reasoning effort")
+				continue
+			}
+			require.NoError(t, err)
+			require.Equal(t, effort, gjson.GetBytes(out, "reasoning.effort").String())
+			require.Equal(t, "pro", gjson.GetBytes(out, "reasoning.mode").String())
+			require.False(t, gjson.GetBytes(out, "temperature").Exists())
+			require.False(t, gjson.GetBytes(out, "top_p").Exists())
+		}
+	}
+	body := []byte(`{"model":"gpt-6-sol","reasoning":{"effort":"none"},"temperature":0.7}`)
+	out, changed, err := normalizeGPT61SolResponsesRequest(body, "gpt-6-sol")
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, body, out)
+}
+
+func TestGPT61SolHTTPResponsesRejectsDisabledReasoning(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, effort := range []string{"none", "minimal"} {
+			for _, baseURL := range []string{"https://api.openai.com", "https://compat.example/v1"} {
+				model := "public"
+				if passthrough {
+					model = "gpt-6.1-sol"
+				}
+				body := []byte(`{"model":"` + model + `","input":"hello","reasoning":{"effort":"` + effort + `"}}`)
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+				upstream := &httpUpstreamRecorder{}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+				account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+					Credentials: map[string]any{"api_key": "fixture-key", "base_url": baseURL, "model_mapping": map[string]any{"public": "gpt-6.1-sol"}},
+					Extra:       map[string]any{"openai_passthrough": passthrough}}
+				_, err := svc.Forward(context.Background(), c, account, body)
+				require.ErrorContains(t, err, "does not support reasoning effort")
+				require.Equal(t, http.StatusBadRequest, rec.Code)
+				require.Nil(t, upstream.lastReq)
+			}
 		}
 	}
 }

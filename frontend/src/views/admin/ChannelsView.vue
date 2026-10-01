@@ -147,13 +147,14 @@
     >
       <div class="channel-dialog-body">
         <!-- Tab Bar -->
-        <div class="flex items-center border-b border-gray-200 dark:border-dark-700 flex-shrink-0 -mx-4 sm:-mx-6 px-4 sm:px-6 -mt-3 sm:-mt-4">
+        <div id="channel-platform-tabs" :aria-label="t('admin.channels.form.platformConfig')" class="flex min-h-12 flex-shrink-0 items-stretch gap-1 overflow-x-auto border-b border-gray-200 px-1 dark:border-dark-700">
           <!-- Basic Settings Tab -->
           <button
             type="button"
             @click="activeTab = 'basic'"
-            class="channel-tab"
-            :class="activeTab === 'basic' ? 'channel-tab-active' : 'channel-tab-inactive'"
+            class="inline-flex flex-shrink-0 items-center justify-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors"
+            :aria-pressed="activeTab === 'basic'"
+            :class="activeTab === 'basic' ? 'border-primary-600 text-primary-600 dark:border-primary-400 dark:text-primary-400' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
           >
             {{ t('admin.channels.form.basicSettings') }}
           </button>
@@ -163,8 +164,9 @@
             :key="section.platform"
             type="button"
             @click="activeTab = section.platform"
-            class="channel-tab group"
-            :class="activeTab === section.platform ? 'channel-tab-active' : 'channel-tab-inactive'"
+            class="inline-flex flex-shrink-0 items-center justify-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors"
+            :aria-pressed="activeTab === section.platform"
+            :class="activeTab === section.platform ? 'border-primary-600 text-primary-600 dark:border-primary-400 dark:text-primary-400' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
           >
             <PlatformIcon :platform="section.platform" size="xs" :class="platformTextClass(section.platform)" />
             <span :class="platformTextClass(section.platform)">{{ t('admin.groups.platforms.' + section.platform, section.platform) }}</span>
@@ -324,18 +326,24 @@
               </div>
             </div>
 
-            <!-- Web Search Emulation (hidden when global disabled) -->
-            <div v-if="supportsWebSearchEmulation(section.platform) && webSearchGlobalEnabled" class="border-t border-gray-200 pt-3 dark:border-dark-600">
-              <div class="flex items-center justify-between">
+            <!-- Keep the saved channel setting visible even when global settings are unavailable. -->
+            <div v-if="supportsWebSearchEmulation(section.platform)" class="border-t border-gray-200 pt-3 dark:border-dark-600">
+              <div class="flex items-center justify-between gap-4">
                 <div>
                   <label class="text-xs font-medium text-gray-700 dark:text-gray-300">
                     {{ t('admin.channels.form.webSearchEmulation') }}
                   </label>
-                  <p class="mt-0.5 text-[11px] text-red-500 dark:text-red-400">
+                  <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
                     {{ t('admin.channels.form.webSearchEmulationHint') }}
                   </p>
                 </div>
-                <Toggle v-model="section.web_search_emulation" />
+                <Toggle v-model="section.web_search_emulation" :aria-label="t('admin.channels.form.webSearchEmulation')" :disabled="webSearchGlobalState !== 'enabled'" :class="{ 'cursor-not-allowed opacity-50': webSearchGlobalState !== 'enabled' }" />
+              </div>
+              <p v-if="webSearchGlobalState === 'loading'" role="status" class="mt-2 text-xs text-gray-500">{{ t('common.loading') }}</p>
+              <p v-else-if="webSearchGlobalState === 'disabled'" role="status" class="mt-2 text-xs text-amber-600 dark:text-amber-400">{{ t('admin.channels.form.webSearchEmulationGlobalDisabled') }}</p>
+              <div v-else-if="webSearchGlobalState === 'error'" role="alert" class="mt-2 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                <span>{{ t('admin.channels.form.webSearchEmulationLoadError') }}</span>
+                <button type="button" class="whitespace-nowrap underline" @click="loadWebSearchGlobalState">{{ t('admin.channels.form.webSearchEmulationRetry') }}</button>
               </div>
             </div>
 
@@ -657,15 +665,19 @@ import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
 const { t } = useI18n()
 const appStore = useAppStore()
 
-// Web Search global enabled state (loaded once on mount)
-const webSearchGlobalEnabled = ref(false)
+const webSearchGlobalState = ref<'loading' | 'enabled' | 'disabled' | 'error'>('loading')
+let webSearchGlobalRequest = 0
 async function loadWebSearchGlobalState() {
+  const request = ++webSearchGlobalRequest
+  webSearchGlobalState.value = 'loading'
   try {
     const cfg = await adminAPI.settings.getWebSearchEmulationConfig()
-    webSearchGlobalEnabled.value = cfg?.enabled === true && (cfg?.providers?.length ?? 0) > 0
+    if (request !== webSearchGlobalRequest) return
+    webSearchGlobalState.value = cfg?.enabled === true && (cfg?.providers?.length ?? 0) > 0 ? 'enabled' : 'disabled'
   } catch (err: unknown) {
+    if (request !== webSearchGlobalRequest) return
     console.warn('Failed to load web search global state:', err)
-    webSearchGlobalEnabled.value = false
+    webSearchGlobalState.value = 'error'
   }
 }
 
@@ -1366,6 +1378,7 @@ function resetForm() {
 }
 
 async function openCreateDialog() {
+  void loadWebSearchGlobalState()
   editingChannel.value = null
   resetForm()
   await Promise.all([loadGroups(), loadAllChannelsForConflict()])
@@ -1373,6 +1386,7 @@ async function openCreateDialog() {
 }
 
 async function openEditDialog(channel: Channel) {
+  void loadWebSearchGlobalState()
   editingChannel.value = channel
   form.name = channel.name
   form.description = channel.description || ''
@@ -1705,17 +1719,5 @@ onUnmounted(() => {
   flex-direction: column;
   height: 70vh;
   min-height: 400px;
-}
-
-.channel-tab {
-  @apply flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap;
-}
-
-.channel-tab-active {
-  @apply border-primary-600 text-primary-600 dark:border-primary-400 dark:text-primary-400;
-}
-
-.channel-tab-inactive {
-  @apply border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300;
 }
 </style>

@@ -270,6 +270,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			normalized = next
 		}
 		responsesLite := isOpenAIResponsesLiteWebSocketPayload(normalized)
+		reasoningBeforeCompatibility := gjson.GetBytes(normalized, "reasoning")
 		if compatibilityBody, compatibilityChanged, compatibilityErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(normalized, account, responsesLite); compatibilityErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", compatibilityErr)
 		} else if compatibilityChanged {
@@ -403,7 +404,23 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				requestModel = mappedModel
 			}
 		}
-		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(requestModel))
+		mappedUpstreamModel := account.GetMappedModel(requestModel)
+		upstreamModel := normalizeOpenAIModelForUpstream(account, mappedUpstreamModel)
+		if err := validateGPT61SolCompatRequest(trimmed, upstreamModel, mappedUpstreamModel); err != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, err.Error(), err)
+		}
+		if openai.IsGPT61SolModelSpelling(upstreamModel) && reasoningBeforeCompatibility.Exists() && gjson.GetBytes(normalized, "reasoning").Raw != reasoningBeforeCompatibility.Raw {
+			next, err := sjson.SetRawBytes(normalized, "reasoning", []byte(reasoningBeforeCompatibility.Raw))
+			if err != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, err.Error(), err)
+			}
+			normalized = next
+		}
+		if next, _, err := normalizeGPT61SolResponsesRequest(normalized, upstreamModel, requestModel, mappedUpstreamModel); err != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, err.Error(), err)
+		} else {
+			normalized = next
+		}
 		if modelMissing || upstreamModel != originalModel {
 			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
 			if setErr != nil {

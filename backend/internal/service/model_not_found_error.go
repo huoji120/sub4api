@@ -22,19 +22,17 @@ func isModelNotFoundError(statusCode int, body []byte) bool {
 	return isUpstreamModelNotFoundError(statusCode, body) || statusCode == http.StatusNotFound
 }
 
-// openAICodexPlanGatedModelPhrase matches the deterministic Codex 400 returned
-// when a ChatGPT OAuth account's plan cannot serve the requested model, e.g.
-// {"detail":"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}
+// openAICodexPlanGatedModelPhrase matches a Codex model-availability rejection.
+// It can reflect account/workspace access OR a stale Codex client version, e.g.
+// {"detail":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}
 // The phrase is compared against the normalized body (lowercased, "_"/"-"
-// folded to spaces), so it also matches the same message embedded in
-// error.message-style payloads.
+// folded to spaces), so it also matches error.message-style payloads.
 const openAICodexPlanGatedModelPhrase = "model is not supported when using codex"
 
-// isOpenAICodexPlanGatedModelError reports whether the upstream response is the
-// deterministic Codex rejection of a plan-gated model on a ChatGPT account.
-// Unlike transient failures, retrying the same account cannot succeed until the
-// account's plan changes, so callers should treat it like model-not-found and
-// cool the (account, model) pair down instead of re-selecting the account.
+// isOpenAICodexPlanGatedModelError recognizes the upstream model rejection,
+// not proof of a subscription entitlement failure. A bounded model cooldown
+// avoids repeated identical requests; operators must check effective client
+// version and workspace before attributing the error to the account's plan.
 func isOpenAICodexPlanGatedModelError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusBadRequest {
 		return false

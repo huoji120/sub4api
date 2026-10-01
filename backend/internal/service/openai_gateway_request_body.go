@@ -1333,7 +1333,7 @@ func normalizeOpenAIOAuthResponsesCompatibilityBody(body []byte) ([]byte, bool, 
 }
 
 func normalizeGPT6ResponsesSampling(body []byte, model string) ([]byte, bool, error) {
-	if !openai.IsGPT6SolFamilyModelSpelling(model) || gjson.GetBytes(body, "reasoning.effort").String() == "none" {
+	if !openai.IsGPT6SolFamilyModelSpelling(model) || (openai.IsGPT6SolOrLunaModelSpelling(model) && gjson.GetBytes(body, "reasoning.effort").String() == "none") {
 		return body, false, nil
 	}
 	out := body
@@ -2544,9 +2544,6 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "none") && openai.IsGPT6SolFamilyModelSpelling(model) {
-		return "none"
-	}
 	if strings.EqualFold(strings.TrimSpace(raw), "max") && supportsOpenAIReasoningEffortMax(model) {
 		return "max"
 	}
@@ -2575,4 +2572,58 @@ func supportsOpenAIReasoningEffortMax(model string) bool {
 	default:
 		return false
 	}
+}
+
+// validateGPT61SolCompatRequest runs after model mapping, before conversions
+// can discard explicit effort selections or disabled thinking.
+func validateGPT61SolCompatRequest(body []byte, model string, mappedModels ...string) error {
+	if !openai.IsGPT61SolModelSpelling(model) {
+		return nil
+	}
+	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+		if err := openai.ValidateGPT61SolReasoningEffort(model, gjson.GetBytes(body, path).String()); err != nil {
+			return err
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()), "disabled") {
+		return openai.ValidateGPT61SolReasoningEffort(model, "none")
+	}
+	for _, candidate := range []string{model, gjson.GetBytes(body, "model").String()} {
+		if err := openai.ValidateGPT61SolReasoningEffort(model, deriveOpenAIReasoningEffortFromModel(candidate)); err != nil {
+			return err
+		}
+	}
+	for _, candidate := range mappedModels {
+		if err := openai.ValidateGPT61SolReasoningEffort(model, deriveOpenAIReasoningEffortFromModel(candidate)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeGPT61SolResponsesRequest(body []byte, model string, mappedModels ...string) ([]byte, bool, error) {
+	if !openai.IsGPT61SolModelSpelling(model) {
+		return body, false, nil
+	}
+	if err := validateGPT61SolCompatRequest(body, model, mappedModels...); err != nil {
+		return body, false, err
+	}
+	out := body
+	changed := false
+	if strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()) == "" {
+		effort := deriveOpenAIReasoningEffortFromModelCandidates([]string{gjson.GetBytes(body, "model").String(), model})
+		if effort == "" {
+			effort = deriveOpenAIReasoningEffortFromModelCandidates(mappedModels)
+		}
+		if effort != "" {
+			var err error
+			out, err = sjson.SetBytes(out, "reasoning.effort", effort)
+			if err != nil {
+				return body, false, err
+			}
+			changed = true
+		}
+	}
+	out, samplingChanged, err := normalizeGPT6ResponsesSampling(out, model)
+	return out, changed || samplingChanged, err
 }

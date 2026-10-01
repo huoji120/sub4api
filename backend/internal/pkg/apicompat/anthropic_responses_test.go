@@ -1884,7 +1884,7 @@ func TestOpus55SignedThinkingResponsesRoundTrip(t *testing.T) {
 
 func TestGPT6ChatSamplingAndCacheFields(t *testing.T) {
 	temperature := 0.7
-	for _, model := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
 		for _, effort := range []string{"", "none", "medium", "max"} {
 			out, err := ChatCompletionsToResponses(&ChatCompletionsRequest{Model: model, ReasoningEffort: effort, Temperature: &temperature, TopP: &temperature, PromptCacheOptions: json.RawMessage(`{"mode":"explicit","ttl":"30m"}`), Messages: []ChatMessage{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]`)}}})
 			require.NoError(t, err)
@@ -1920,4 +1920,32 @@ func TestMessageStartSSE_StopReasonIsJSONNull(t *testing.T) {
 	// Official Anthropic wire: "stop_reason":null
 	require.Contains(t, sse, `"stop_reason":null`)
 	require.NotContains(t, sse, `"stop_reason":""`)
+}
+
+func TestGPT61SolConversionPreservesEffortWithoutSampling(t *testing.T) {
+	sampling := 0.7
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		chat, err := ChatCompletionsToResponses(&ChatCompletionsRequest{
+			Model: "gpt-6.1-sol", ReasoningEffort: effort, Temperature: &sampling, TopP: &sampling,
+			PromptCacheOptions: json.RawMessage(`{"ttl":"30m"}`),
+			Messages:           []ChatMessage{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]`)}},
+		})
+		require.NoError(t, err)
+		require.Equal(t, effort, chat.Reasoning.Effort)
+		require.Nil(t, chat.Temperature)
+		require.Nil(t, chat.TopP)
+		require.JSONEq(t, `{"ttl":"30m"}`, string(chat.PromptCacheOptions))
+		require.Contains(t, string(chat.Input), "prompt_cache_breakpoint")
+		messages, err := AnthropicToResponses(&AnthropicRequest{Model: "gpt-6.1-sol", OutputConfig: &AnthropicOutputConfig{Effort: effort}, Temperature: &sampling, TopP: &sampling})
+		require.NoError(t, err)
+		require.Equal(t, effort, messages.Reasoning.Effort)
+		require.Nil(t, messages.Temperature)
+		require.Nil(t, messages.TopP)
+	}
+	for _, effort := range []string{"none", "minimal"} {
+		_, err := ChatCompletionsToResponses(&ChatCompletionsRequest{Model: "gpt-6.1-sol", ReasoningEffort: effort})
+		require.ErrorContains(t, err, "does not support reasoning effort")
+		_, err = AnthropicToResponses(&AnthropicRequest{Model: "gpt-6.1-sol", OutputConfig: &AnthropicOutputConfig{Effort: effort}})
+		require.ErrorContains(t, err, "does not support reasoning effort")
+	}
 }

@@ -237,6 +237,24 @@ func TestHostedResponsesSearchParsesTerminalSSEAndRejectsTruncation(t *testing.T
 	require.ErrorContains(t, err, "no complete Responses object")
 }
 
+func TestHostedResponsesSearchRecoversCompletedSSEItems(t *testing.T) {
+	call := json.RawMessage(`{"type":"function_call","id":"fc_search","call_id":"search","name":"__sub4api_web_search","arguments":"{\"query\":\"official release\"}","status":"completed"}`)
+	message := json.RawMessage(`{"type":"message","id":"msg_answer","role":"assistant","content":[{"type":"output_text","text":"SOL61_OK"}]}`)
+	prefix := "data: " + string(rawResponsesSearchJSON(map[string]any{"type": "response.output_item.done", "output_index": 1, "item": message})) + "\n\n" +
+		"data: " + string(rawResponsesSearchJSON(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": call})) + "\n\n"
+	terminal := `data: {"type":"response.completed","response":{"id":"resp_done","object":"response","status":"completed","output":[],"usage":{"output_tokens":7}}}` + "\n\n"
+	response, err := parseResponsesWebSearchRound([]byte(prefix + terminal))
+	require.NoError(t, err)
+	require.Equal(t, "search", gjson.GetBytes(response["output"], "0.call_id").String())
+	require.Equal(t, "SOL61_OK", gjson.GetBytes(response["output"], "1.content.0.text").String())
+	require.Equal(t, int64(7), gjson.GetBytes(response["usage"], "output_tokens").Int())
+
+	terminal = "data: " + string(rawResponsesSearchJSON(map[string]any{"type": "response.completed", "response": map[string]any{"object": "response", "status": "completed", "output": []json.RawMessage{message}}})) + "\n\n"
+	response, err = parseResponsesWebSearchRound([]byte(prefix + terminal))
+	require.NoError(t, err)
+	require.JSONEq(t, "["+string(message)+"]", string(response["output"]))
+}
+
 func TestHostedResponsesSearchKeepsAllowedToolsDuringContinuation(t *testing.T) {
 	body := `{"model":"test-model","input":"find latest","tools":[{"type":"function","name":"delete_file","parameters":{"type":"object"}},{"type":"web_search"}],"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"web_search"}]}}`
 	c, _ := hostedSearchTestContext(t, body, 306)

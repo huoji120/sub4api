@@ -3780,3 +3780,48 @@ func TestGPT6SolLunaCatalogKeepsAuthoritativeCapabilities(t *testing.T) {
 		require.Nil(t, models[0]["apply_patch_tool_type"])
 	}
 }
+
+func TestGPT61SolCatalogAdvertisesOfficialReasoningAndToolMode(t *testing.T) {
+	body, err := BuildCodexModelsManifest([]string{"gpt-6.1-sol"})
+	require.NoError(t, err)
+	var catalog struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(body, &catalog))
+	require.Len(t, catalog.Models, 1)
+	model := catalog.Models[0]
+	require.JSONEq(t, `"low"`, string(model["default_reasoning_level"]))
+	require.JSONEq(t, `true`, string(model["use_responses_lite"]))
+	require.JSONEq(t, `"code_mode_only"`, string(model["tool_mode"]))
+	require.JSONEq(t, `true`, string(model["prefer_websockets"]))
+	require.JSONEq(t, `272000`, string(model["context_window"]))
+	require.JSONEq(t, `872000`, string(model["max_context_window"]))
+	var levels []configuredCodexReasoningLevel
+	require.NoError(t, json.Unmarshal(model["supported_reasoning_levels"], &levels))
+	efforts := make([]string, 0, len(levels))
+	for _, level := range levels {
+		efforts = append(efforts, level.Effort)
+	}
+	require.ElementsMatch(t, []string{"low", "medium", "high", "xhigh", "max", "ultra"}, efforts)
+	var messages map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(model["model_messages"], &messages))
+	for _, field := range []string{"persistent_instructions", "tools", "confirmation_policies"} {
+		require.Contains(t, messages, field)
+	}
+}
+
+func TestGPT61SolAPIKeyCatalogDoesNotEnableOAuthLite(t *testing.T) {
+	for _, baseURL := range []string{"https://api.openai.com", "https://proxy.example"} {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": baseURL}}
+		body, err := completeAPIKeyCodexModelsManifestMetadata([]byte(`{"models":[{"slug":"gpt-6.1-sol"}]}`), true, account)
+		require.NoError(t, err)
+		body, err = adjustAPIKeyCodexModelsManifest(body, account)
+		require.NoError(t, err)
+		var catalog struct {
+			Models []map[string]json.RawMessage `json:"models"`
+		}
+		require.NoError(t, json.Unmarshal(body, &catalog))
+		require.JSONEq(t, `false`, string(catalog.Models[0]["use_responses_lite"]))
+		require.JSONEq(t, `"low"`, string(catalog.Models[0]["default_reasoning_level"]))
+	}
+}

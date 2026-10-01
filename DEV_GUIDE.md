@@ -98,6 +98,8 @@ go test -tags=unit ./internal/service ./internal/repository ./internal/handler .
 
 GPT-6.1 Sol (`gpt-6.1-sol`) is included in the OpenAI catalog, model whitelist, Codex normalization, Responses/Chat reasoning guards, and billing fallbacks. The billing fallback follows the official API contract: $2/M uncached input, $0.10/M cached input, $2.50/M cache creation, $10/M output, 2x fast pricing, and the 272K long-context multiplier. Upstream model metadata remains authoritative when available.
 
+GPT-6.1 Sol is reasoning-only: explicit `none`, `minimal` or disabled thinking is rejected rather than silently upgraded. Supported API efforts are `low`, `medium`, `high`, `xhigh`, and `max`. Its pinned [official Codex descriptor](https://github.com/openai/codex/blob/b1e72963c3b71a9265a551e54beff078384efed9/codex-rs/models-manager/models.json) defaults to `low` and advertises Responses Lite/code mode for official ChatGPT OAuth; API-key catalogs keep plain Responses. The Codex `model is not supported when using Codex with a ChatGPT account` message does not prove a plan restriction: check the effective version, not just account type or the bundled descriptor's minimum version. With the same account and Lite/low request, `0.158.0` returned this 400 and `0.159.3` completed successfully. Manual version overrides take precedence over the synchronized value; when automatic synchronization is disabled, an old synchronized value remains in effect until an explicit version is set. Reference: [cc-switch #7797](https://github.com/farion1231/cc-switch/issues/7797).
+
 ### Responses 服务端 Web Search
 
 这是中转站托管的工具，不是客户端函数工具。开启后，客户端不必注册搜索工具，
@@ -107,8 +109,9 @@ GPT-6.1 Sol (`gpt-6.1-sol`) is included in the OpenAI catalog, model whitelist, 
 启用顺序：
 
 1. 系统设置 → 网关 → Web Search 模拟：配置 Brave/Tavily 并打开全局开关。
-2. 渠道中打开对应平台的 Web Search 模拟，或将 API Key 上游账号设为“开启”。
+2. 渠道管理 → 编辑 → 对应平台标签（例如 OpenAI）→ 关联分组下面的“Web Search 模拟”，或将 API Key 上游账号设为“开启”。OAuth 账号通过渠道控制，不显示账号级覆盖开关。
    账号“默认”跟随渠道，“关闭”覆盖渠道；账号“开启”仍不能绕过全局关闭。
+   渠道搜索项始终可见；全局未开启/未配置服务商时禁用并提示，加载失败显示“重新加载”，不会隐藏整行或丢失已保存的渠道值。每次打开编辑弹窗重新读取全局状态。
 3. 客户端发送普通 Responses 请求，例如：
 
    ```json
@@ -131,6 +134,7 @@ GPT-6.1 Sol (`gpt-6.1-sol`) is included in the OpenAI catalog, model whitelist, 
   `max_output_tokens` 跨模型轮次扣减。用量与计费结果累计真实模型轮次的 token。
 - JSON 与 SSE 均支持。接管请求先收集每个模型轮次，再组装单个 Responses 结果和标准 SSE
   生命周期；这是缓冲交付，不是逐 token 直通。关闭接管时原流式转发不变。
+  Codex 流中若终止事件的 `output` 为空，使用已经收到的 `response.output_item.done` 按索引恢复完整输出；非空的终止输出仍优先，避免丢失搜索调用或回答。
 - 保留最终上游 response ID。公共搜索项重放和“同轮服务端搜索 + 客户端调用”的续接结果
   按用户/API Key/分组隔离，保存在当前进程的有界搜索缓存中（1 小时，最多 4096 条/64 MiB）。
   进程重启或淘汰后，重放过期的网关搜索项会报错，应改为发送消息形式的上下文。

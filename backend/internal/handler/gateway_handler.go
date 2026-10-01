@@ -2229,7 +2229,7 @@ const (
 	InterceptTypeNone              InterceptType = iota
 	InterceptTypeWarmup                          // 预热请求（返回 "New Conversation"）
 	InterceptTypeSuggestionMode                  // SUGGESTION MODE（返回空字符串）
-	InterceptTypeMaxTokensOneHaiku               // max_tokens=1 + haiku 探测请求（返回 "#"）
+	InterceptTypeMaxTokensOneProbe               // Claude Code max_tokens=1 探测请求（返回 "#"）
 )
 
 // isHaikuModel 检查模型名称是否包含 "haiku"（大小写不敏感）
@@ -2251,9 +2251,9 @@ func isMaxTokensOneHaikuRequest(model string, maxTokens int) bool {
 //   - maxTokens: max_tokens 值
 //   - isClaudeCodeClient: 是否已通过 Claude Code 客户端校验
 func detectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeClient bool) InterceptType {
-	// 优先检查 max_tokens=1 + haiku 探测请求（流式/非流式均适用）
-	if isClaudeCodeClient && isMaxTokensOneHaikuRequest(model, maxTokens) {
-		return InterceptTypeMaxTokensOneHaiku
+	// Claude Code 的 max_tokens=1 探测请求可使用当前模型，不限于 Haiku。
+	if isClaudeCodeClient && maxTokens == 1 {
+		return InterceptTypeMaxTokensOneProbe
 	}
 
 	// 快速检查：如果不包含任何关键字，直接返回
@@ -2327,12 +2327,18 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 	var msgID string
 	var outputTokens int
 	var textDeltas []string
+	stopReason := "end_turn"
 
 	switch interceptType {
 	case InterceptTypeSuggestionMode:
 		msgID = generateRealisticMsgID()
 		outputTokens = 1
 		textDeltas = []string{""} // 空内容
+	case InterceptTypeMaxTokensOneProbe:
+		msgID = generateRealisticMsgID()
+		outputTokens = 1
+		textDeltas = []string{"#"}
+		stopReason = "max_tokens"
 	default: // InterceptTypeWarmup
 		msgID = generateRealisticMsgID()
 		outputTokens = 2
@@ -2355,7 +2361,7 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 	}
 
 	// Add final events
-	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
+	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"` + stopReason + `","stop_sequence":null,"stop_details":null},"usage":{"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
 
 	events = append(events,
 		`event: content_block_stop`+"\n"+`data: {"index":0,"type":"content_block_stop"}`,
@@ -2397,7 +2403,7 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 		text = ""
 		outputTokens = 1
 		stopReason = "end_turn"
-	case InterceptTypeMaxTokensOneHaiku:
+	case InterceptTypeMaxTokensOneProbe:
 		msgID = generateRealisticMsgID()
 		text = "#"
 		outputTokens = 1

@@ -18,7 +18,27 @@ func TestDetectInterceptType_MaxTokensOneHaikuRequiresClaudeCodeClient(t *testin
 	require.Equal(t, InterceptTypeNone, notClaudeCode)
 
 	isClaudeCode := detectInterceptType(body, "claude-haiku-4-5", 1, true)
-	require.Equal(t, InterceptTypeMaxTokensOneHaiku, isClaudeCode)
+	require.Equal(t, InterceptTypeMaxTokensOneProbe, isClaudeCode)
+}
+
+func TestDetectInterceptType_MaxTokensOneProbeAllowsCurrentModel(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	got := detectInterceptType(body, "claude-opus-5-5", 1, true)
+	require.Equal(t, InterceptTypeMaxTokensOneProbe, got)
+}
+
+func TestSendMockInterceptStream_MaxTokensOneProbe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+
+	sendMockInterceptStream(ctx, "claude-opus-5-5", InterceptTypeMaxTokensOneProbe)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"text":"#"`)
+	require.Contains(t, rec.Body.String(), `"stop_reason":"max_tokens"`)
+	require.Contains(t, rec.Body.String(), `"output_tokens":1`)
 }
 
 func TestDetectInterceptType_SuggestionModeUnaffected(t *testing.T) {
@@ -39,7 +59,7 @@ func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 
-	sendMockInterceptResponse(ctx, "claude-haiku-4-5", InterceptTypeMaxTokensOneHaiku)
+	sendMockInterceptResponse(ctx, "claude-haiku-4-5", InterceptTypeMaxTokensOneProbe)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 

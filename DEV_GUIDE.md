@@ -96,6 +96,55 @@ go test -tags=unit ./internal/service ./internal/repository ./internal/handler .
 部署出口及运营方式仍可能不同；不自动伪造工作区、sandbox 或遥测。离线回归与本地抓包
 不代表真实 OpenAI 账号验收，不能用本文推断未公开的风控规则。
 
+GPT-6.1 Sol (`gpt-6.1-sol`) is included in the OpenAI catalog, model whitelist, Codex normalization, Responses/Chat reasoning guards, and billing fallbacks. The billing fallback follows the official API contract: $2/M uncached input, $0.10/M cached input, $2.50/M cache creation, $10/M output, 2x fast pricing, and the 272K long-context multiplier. Upstream model metadata remains authoritative when available.
+
+### Responses 服务端 Web Search
+
+这是中转站托管的工具，不是客户端函数工具。开启后，客户端不必注册搜索工具，
+普通 `POST /v1/responses` 请求即可让模型选择搜索；模型选择不搜索时正常返回回答。
+协议类型与输出格式参考 [OpenAI Web search](https://developers.openai.com/api/docs/guides/tools-web-search)。
+
+启用顺序：
+
+1. 系统设置 → 网关 → Web Search 模拟：配置 Brave/Tavily 并打开全局开关。
+2. 渠道中打开对应平台的 Web Search 模拟，或将 API Key 上游账号设为“开启”。
+   账号“默认”跟随渠道，“关闭”覆盖渠道；账号“开启”仍不能绕过全局关闭。
+3. 客户端发送普通 Responses 请求，例如：
+
+   ```json
+   {"model":"your-model","input":"查一下今天的发布信息并附来源","stream":true}
+   ```
+
+执行与兼容边界：
+
+- 全局关闭、账号关闭、渠道未开启时不接管，不移除或改写客户端原来的搜索工具。
+  原生上游搜索仍由原转发链路处理。显式 `tool_choice: "none"` 不启用托管搜索。
+- 启用时网关向上游模型提供内部搜索函数；由模型生成查询，Brave/Tavily 返回真实结果，
+  再回填模型继续生成。客户端函数工具可以共存，仍由客户端执行。
+- 对外返回标准 `web_search_call`、来源 URL 和回答；不暴露内部搜索函数或要求客户端执行它。
+  回答中实际引用来源 URL 时添加 `url_citation`，不为没有引用的文字伪造引用。
+- 客户端显式声明 `web_search` / `web_search_preview` 也由网关接管。
+  支持 `search_context_size`、`filters.allowed_domains` 和 `external_web_access: true`；
+  不支持的搜索约束返回明确错误，不静默忽略。域名限制同时用于查询和结果过滤。
+- 尊重强制客户端函数与 `allowed_tools` 限制；内部搜索满足 required 后，仅放宽继续生成的
+  必选要求，不扩大 allowed_tools 范围。默认最多 8 次搜索，可用 `max_tool_calls` 设置；
+  `max_output_tokens` 跨模型轮次扣减。用量与计费结果累计真实模型轮次的 token。
+- JSON 与 SSE 均支持。接管请求先收集每个模型轮次，再组装单个 Responses 结果和标准 SSE
+  生命周期；这是缓冲交付，不是逐 token 直通。关闭接管时原流式转发不变。
+- 保留最终上游 response ID。公共搜索项重放和“同轮服务端搜索 + 客户端调用”的续接结果
+  按用户/API Key/分组隔离，保存在当前进程的有界搜索缓存中（1 小时，最多 4096 条/64 MiB）。
+  进程重启或淘汰后，重放过期的网关搜索项会报错，应改为发送消息形式的上下文。
+- 覆盖 HTTP Responses 的原生 OpenAI 兼容链路、Chat/Anthropic 上游桥接及 Antigravity 桥接；
+  不接管 WebSocket、`/responses/compact`、`/responses/input_tokens`、Chat/Messages 原生入口。
+  托管搜索不支持 `background: true`，启用接管时明确拒绝；关闭功能后仍按原链路转发。
+  原 Anthropic“纯搜索请求”快捷模拟保持不变。
+
+定向回归：
+
+```bash
+go test -tags=unit ./internal/service ./internal/handler ./internal/pkg/apicompat ./internal/pkg/websearch -run 'HostedResponses|ResponsesSearch|GetWebSearchEmulationMode|WebSearch|ForwardResponses|ForwardAsResponses|ResponsesStream|ResponsesClientTools' -count=1
+```
+
 ### Claude Code / Anthropic 转发兼容性
 
 Claude Code 2.1.283 的转发基线应优先保证协议语义，而不是逐字节仿冒：

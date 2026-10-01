@@ -966,7 +966,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					reqLog.Warn("openai.upstream_failover_switching", failoverSwitchFields...)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), false, nil, err)
+                schedulingSucceeded := service.IsHostedResponsesWebSearchProviderError(err)
+                var schedulingFirstToken *int
+                if schedulingSucceeded && result != nil {
+                    schedulingFirstToken = result.FirstTokenMs
+                }
+                h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), schedulingSucceeded, schedulingFirstToken, err)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {

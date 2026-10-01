@@ -3762,7 +3762,7 @@ func TestCodexGPTIdentityPatternsCoverBundledPrompts(t *testing.T) {
 }
 
 func TestGPT6SolLunaCatalogKeepsAuthoritativeCapabilities(t *testing.T) {
-	for _, id := range []string{"gpt-6-sol", "gpt-6-luna"} {
+	for _, id := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
 		svc := &OpenAIGatewayService{}
 		manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"` + id + `","supported_reasoning_levels":[{"effort":"ultra"}],"default_reasoning_level":"ultra","multi_agent_reasoning_effort":"xhigh","service_tiers":[{"id":"ultrafast"}],"context_window":300000,"max_context_window":900000,"supports_search_tool":false,"apply_patch_tool_type":null}]}`)}
 		account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")

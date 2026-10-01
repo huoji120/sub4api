@@ -925,7 +925,7 @@ export default {
         apiKeyAuthSchemeBearer: 'Authorization: Bearer',
         webSearchEmulation: 'Web Search Emulation',
         webSearchEmulationDesc:
-          'Enable web search emulation for this API Key account. When a pure web_search request is detected, the gateway calls a third-party search API and constructs the response locally. Default follows channel config.',
+          'Default follows the channel; Enabled/Disabled overrides it while the global switch remains required. On HTTP Responses, the server provides web_search to the model and executes searches; clients need not register or run it. Explicit tool_choice none is respected. Legacy Anthropic requests still use the pure-search shortcut.',
         webSearchDefault: 'Default',
         webSearchEnabled: 'Enabled',
         webSearchDisabled: 'Disabled',

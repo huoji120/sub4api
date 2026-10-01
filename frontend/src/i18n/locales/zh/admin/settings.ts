@@ -607,7 +607,7 @@ export default {
       },
       webSearchEmulation: {
         title: 'Web Search 模拟',
-        description: '为不原生支持搜索的 Anthropic API Key 账号注入 web search 能力',
+        description: '为已启用的 HTTP Responses 路由提供并执行服务端 web_search，客户端无需注册或执行工具；显式 tool_choice none 不启用搜索。通过账号/渠道配置选择启用范围。旧版 Anthropic 纯搜索请求仍沿用现有快捷处理。',
         enabled: '启用 Web Search 模拟',
         enabledHint: '全局开关。关闭后所有渠道和账号的 web search 模拟均不生效。',
         providers: '搜索服务商',

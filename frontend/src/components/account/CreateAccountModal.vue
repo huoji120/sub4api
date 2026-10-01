@@ -3202,9 +3202,9 @@
         </div>
       </div>
 
-      <!-- Anthropic API Key: Web Search Emulation (hidden when global disabled) -->
+      <!-- API Key: Web Search Emulation (hidden when global disabled) -->
       <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'apikey' && webSearchGlobalEnabled"
+        v-if="supportsWebSearchEmulation(form.platform) && form.type === 'apikey' && webSearchGlobalEnabled"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -4008,6 +4008,7 @@ import {
   parseDateTimeLocalInput
 } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { supportsWebSearchEmulation } from '@/utils/webSearchEmulation'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
@@ -4958,8 +4959,8 @@ watch(
     if (newPlatform !== 'anthropic') {
       anthropicPassthroughEnabled.value = false
       anthropicAPIKeyAuthScheme.value = 'x_api_key'
-      webSearchEmulationMode.value = 'default'
     }
+    webSearchEmulationMode.value = 'default'
     // 请求头覆写为平台相关配置（常用头集合不同），切换平台时清空，
     // 避免上一平台的配置行被提交到新平台账号
     headerOverrideEnabled.value = false
@@ -4979,7 +4980,7 @@ watch(
 
 // Gemini AI Studio OAuth availability (requires operator-configured OAuth client)
 watch(
-  [accountCategory, () => form.platform],
+  [accountCategory, () => form.platform, () => form.type],
   ([category, platform]) => {
     if (platform === 'openai' && category !== 'oauth-based') {
       codexCLIOnlyEnabled.value = false
@@ -4988,6 +4989,8 @@ watch(
     if (platform !== 'anthropic' || category !== 'apikey') {
       anthropicPassthroughEnabled.value = false
       anthropicAPIKeyAuthScheme.value = 'x_api_key'
+    }
+    if (form.type !== 'apikey' || !supportsWebSearchEmulation(platform)) {
       webSearchEmulationMode.value = 'default'
     }
   }
@@ -5582,6 +5585,14 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
   } else {
     delete extra.anthropic_apikey_auth_scheme
   }
+  return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+const buildWebSearchExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
+  if (!supportsWebSearchEmulation(form.platform) || form.type !== 'apikey') {
+    return base
+  }
+  const extra: Record<string, unknown> = { ...(base || {}) }
   if (webSearchEmulationMode.value === 'default') {
     delete extra.web_search_emulation
   } else {
@@ -5956,7 +5967,7 @@ const handleSubmit = async () => {
   }
 
   form.credentials = credentials
-  const extra = buildAnthropicExtra(buildOpenAIExtra())
+  const extra = buildWebSearchExtra(buildAnthropicExtra(buildOpenAIExtra()))
 
   await doCreateAccount({
     ...form,
@@ -6024,7 +6035,7 @@ const createAccountAndFinish = async (
     return
   }
   // Inject quota limits for apikey/bedrock accounts
-  let finalExtra = withUpstreamRequestIdHeader(extra)
+  let finalExtra = withUpstreamRequestIdHeader(buildWebSearchExtra(extra))
   if (type === 'apikey' || type === 'bedrock') {
     const quotaExtra: Record<string, unknown> = { ...(finalExtra || {}) }
     if (editQuotaLimit.value != null && editQuotaLimit.value > 0) {

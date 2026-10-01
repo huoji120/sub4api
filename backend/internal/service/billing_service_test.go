@@ -1982,6 +1982,7 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 			model                      string
 			input, output, write, read float64
 		}{
+			{"gpt-6.1-sol", 2e-6, 10e-6, 2.5e-6, 0.1e-6},
 			{"gpt-6-sol", 2e-6, 10e-6, 2.5e-6, 0.2e-6},
 			{"gpt-6-luna", 0.1e-6, 0.5e-6, 0.125e-6, 0.01e-6},
 		} {
@@ -2023,9 +2024,69 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 	}
 }
 
+func TestGPT61SolFallbackPricingUsesOfficialStandardAndCachedRates(t *testing.T) {
+	staleCatalog := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"gpt-6-sol":  {InputCostPerToken: 2e-6, OutputCostPerToken: 10e-6},
+		"gpt-6-luna": {InputCostPerToken: 0.1e-6, OutputCostPerToken: 0.5e-6},
+	}}
+	sources := map[string]*BillingService{
+		"billing fallback":       newTestBillingService(),
+		"absent pricing catalog": NewBillingService(&config.Config{}, &PricingService{pricingData: map[string]*LiteLLMModelPricing{}}),
+		"stale pricing catalog":  NewBillingService(&config.Config{}, staleCatalog),
+	}
+	for source, svc := range sources {
+		t.Run(source, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing("gpt-6.1-sol")
+			require.NoError(t, err)
+			require.InDelta(t, 2e-6, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, 4e-6, pricing.InputPricePerTokenPriority, 1e-12)
+			require.InDelta(t, 10e-6, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, 20e-6, pricing.OutputPricePerTokenPriority, 1e-12)
+			require.InDelta(t, 2.5e-6, pricing.CacheCreationPricePerToken, 1e-12)
+			require.InDelta(t, 5e-6, pricing.CacheCreationPricePerTokenPriority, 1e-12)
+			require.InDelta(t, 0.1e-6, pricing.CacheReadPricePerToken, 1e-12)
+			require.InDelta(t, 0.2e-6, pricing.CacheReadPricePerTokenPriority, 1e-12)
+			require.Equal(t, 272000, pricing.LongContextInputThreshold)
+			require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
+			require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
+
+			standard, err := svc.CalculateCost("openai/gpt-6.1-sol-high", UsageTokens{
+				InputTokens: 1000, CacheCreationTokens: 3000, CacheReadTokens: 2000, OutputTokens: 4000,
+			}, 1)
+			require.NoError(t, err)
+			require.InDelta(t, 0.002, standard.InputCost, 1e-12)
+			require.InDelta(t, 0.0075, standard.CacheCreationCost, 1e-12)
+			require.InDelta(t, 0.0002, standard.CacheReadCost, 1e-12)
+			require.InDelta(t, 0.04, standard.OutputCost, 1e-12)
+			require.InDelta(t, 0.0497, standard.TotalCost, 1e-12)
+			require.False(t, standard.LongContextBillingApplied)
+
+			boundaryTokens := UsageTokens{InputTokens: 270000, CacheReadTokens: 2000, OutputTokens: 1000}
+			boundary, err := svc.CalculateCost("gpt-6.1-sol", boundaryTokens, 1)
+			require.NoError(t, err)
+			require.False(t, boundary.LongContextBillingApplied)
+			require.InDelta(t, 0.5502, boundary.TotalCost, 1e-12)
+
+			aboveTokens := UsageTokens{InputTokens: 270001, CacheReadTokens: 2000, OutputTokens: 1000}
+			above, err := svc.CalculateCost("gpt-6.1-sol", aboveTokens, 1)
+			require.NoError(t, err)
+			require.True(t, above.LongContextBillingApplied)
+			require.InDelta(t, 1.095404, above.TotalCost, 1e-12)
+
+			for tier, expected := range map[string]float64{"priority": 0.0994, "flex": 0.02485} {
+				cost, err := svc.CalculateCostWithServiceTier("gpt-6.1-sol", UsageTokens{
+					InputTokens: 1000, CacheCreationTokens: 3000, CacheReadTokens: 2000, OutputTokens: 4000,
+				}, 1, tier)
+				require.NoError(t, err)
+				require.InDelta(t, expected, cost.TotalCost, 1e-12)
+			}
+		})
+	}
+}
+
 func TestNewModelPricingChannelOverridesAndFamilyIsolation(t *testing.T) {
 	svc := newTestBillingService()
-	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "claude-opus-5-5"} {
+	for _, model := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "claude-opus-5-5"} {
 		t.Run(model, func(t *testing.T) {
 			zero := 0.0
 			prices, err := svc.GetModelPricingWithChannel(model, &ChannelModelPricing{InputPrice: &zero, OutputPrice: &zero, CacheWritePrice: &zero, CacheReadPrice: &zero})
@@ -2043,6 +2104,7 @@ func TestNewModelPricingChannelOverridesAndFamilyIsolation(t *testing.T) {
 	prices, err = svc.GetModelPricing("gpt-6")
 	require.NoError(t, err)
 	require.Equal(t, 10e-6, prices.InputPricePerToken)
+	require.Equal(t, "gpt-6.1-sol", normalizeKnownOpenAICodexModel("openai/gpt-6.1-sol-high"))
 	require.Equal(t, "gpt-6-sol", normalizeKnownOpenAICodexModel("openai/gpt-6-sol-max"))
 	require.Equal(t, "gpt-6-luna", normalizeKnownOpenAICodexModel("gpt-6-luna-openai-compact"))
 }
@@ -2050,22 +2112,24 @@ func TestNewModelPricingChannelOverridesAndFamilyIsolation(t *testing.T) {
 func TestNewModelPricingExplicitZeroCacheWrite(t *testing.T) {
 	svc := &PricingService{}
 	var err error
-	svc.pricingData, err = svc.parsePricingData([]byte(`{"gpt-6-sol":{"litellm_provider":"openai","input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"input_cost_per_token_flex":0.000001,"cache_creation_input_token_cost":0}}`))
+	svc.pricingData, err = svc.parsePricingData([]byte(`{"gpt-6.1-sol":{"litellm_provider":"openai","input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"input_cost_per_token_flex":0.000001,"cache_creation_input_token_cost":0},"gpt-6-sol":{"litellm_provider":"openai","input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"input_cost_per_token_flex":0.000001,"cache_creation_input_token_cost":0}}`))
 	require.NoError(t, err)
 	billing := NewBillingService(&config.Config{}, svc)
-	for _, tier := range []string{"", "priority", "flex"} {
-		cost, err := billing.CalculateCostWithServiceTier("gpt-6-sol", UsageTokens{CacheCreationTokens: 1000}, 1, tier)
-		require.NoError(t, err)
-		require.Zero(t, cost.CacheCreationCost)
+	for _, model := range []string{"gpt-6.1-sol", "openai/gpt-6.1-sol-high", "gpt-6-sol"} {
+		for _, tier := range []string{"", "priority", "flex"} {
+			cost, err := billing.CalculateCostWithServiceTier(model, UsageTokens{CacheCreationTokens: 1000}, 1, tier)
+			require.NoError(t, err)
+			require.Zero(t, cost.CacheCreationCost)
+		}
 	}
 }
 
 func TestNewModelPricingAliasesRetainExplicitOverrides(t *testing.T) {
 	zero := &LiteLLMModelPricing{}
 	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
-		"gpt-6-sol": zero, "gpt-6-luna": zero, "claude-opus-5-5": zero,
+		"gpt-6.1-sol": zero, "gpt-6-sol": zero, "gpt-6-luna": zero, "claude-opus-5-5": zero,
 	}}
-	for _, model := range []string{"gpt-6-sol-max", "openai/gpt-6-luna-openai-compact", "claude-opus-5-5-thinking"} {
+	for _, model := range []string{"gpt-6.1-sol-high", "openai/gpt-6-sol-max", "openai/gpt-6-luna-openai-compact", "claude-opus-5-5-thinking"} {
 		require.Same(t, zero, svc.GetModelPricing(model))
 	}
 }

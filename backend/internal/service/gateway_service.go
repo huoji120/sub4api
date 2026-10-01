@@ -688,6 +688,9 @@ type ForwardResult struct {
 	ImageSizeBreakdown map[string]int
 	SearchCount        int
 	AudioUsage         *AudioUsage
+
+	hostedSearchRounds     []*ForwardResult
+	hostedSearchRoundCosts []*CostBreakdown
 }
 
 // GatewayFailureStage identifies which request stage failed. The zero value is

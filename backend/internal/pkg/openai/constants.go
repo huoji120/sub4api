@@ -24,6 +24,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-sol", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
+	{ID: "gpt-6.1-sol", Object: "model", Created: 1790812800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
 	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
@@ -176,4 +177,28 @@ func IsGPT6SolOrLunaModelSpelling(model string) bool {
 		}
 	}
 	return false
+}
+
+// IsGPT61SolModelSpelling recognizes the GPT-6.1 Sol ID and local effort/compact suffixes.
+func IsGPT61SolModelSpelling(model string) bool {
+	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
+	const base = "gpt-6.1-sol"
+	if canonical == base {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(canonical, base+"-")
+	if !ok {
+		return false
+	}
+	switch suffix {
+	case "none", "low", "medium", "high", "xhigh", "max", "openai-compact":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsGPT6SolFamilyModelSpelling covers GPT-6 Sol/Luna and GPT-6.1 Sol variants.
+func IsGPT6SolFamilyModelSpelling(model string) bool {
+	return IsGPT6SolOrLunaModelSpelling(model) || IsGPT61SolModelSpelling(model)
 }

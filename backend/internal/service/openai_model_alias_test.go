@@ -30,6 +30,13 @@ func TestNormalizeKnownOpenAICodexModel_BareGPT56RoutesToSol(t *testing.T) {
 	}
 }
 
+func TestNormalizeKnownOpenAICodexModelGPT61Sol(t *testing.T) {
+	for _, model := range []string{"gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-6.1_SOL-high", "gpt-6.1-sol-openai-compact"} {
+		require.Equal(t, "gpt-6.1-sol", normalizeKnownOpenAICodexModel(model))
+	}
+	require.True(t, isOpenAIGPT6Model("gpt-6.1-sol"))
+}
+
 func TestUsageBillingModelCandidates_BareGPT56IncludesSol(t *testing.T) {
 	require.Equal(t,
 		[]string{"gpt-5.6", "gpt-5.6-sol"},

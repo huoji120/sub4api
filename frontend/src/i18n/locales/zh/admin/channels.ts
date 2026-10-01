@@ -201,7 +201,7 @@ export default {
         defaultVideoPrice: '默认视频每秒价格（未命中层级时使用）',
         platformConfig: '平台配置',
         webSearchEmulation: 'Web Search 模拟',
-        webSearchEmulationHint: '⚠️ 开启后该渠道下所有 Anthropic 分组的账号将自动拦截 web_search 请求，请谨慎操作',
+        webSearchEmulationHint: '全局开关开启后，为该平台的 HTTP Responses 提供服务端搜索；API Key 账号可单独覆盖。客户端无需注册或执行 web_search，显式 tool_choice none 不启用搜索。旧版 Anthropic 请求仍保留纯搜索快捷处理。',
         webSearchEmulationGlobalDisabled: '请先在系统设置 → 网关 → Web Search 模拟中启用全局开关',
         codexImageGenerationBridge: 'Codex 图片生成桥接',
         codexImageGenerationBridgeHint: '开启后，OpenAI 分组仅会为非 Responses Lite 的 Codex /responses 文本请求自动注入 hosted image_generation 工具。桥接不会为 Responses Lite 注入工具；本地 image_gen 的处理由客户端和账号策略决定。仅在路由账号支持图片生成时开启。',

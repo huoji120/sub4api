@@ -19,7 +19,7 @@ func TestIsReasoningModelCoversLaterGenerations(t *testing.T) {
 		{"gpt-6-astra", true},
 		{"gpt-6", true},
 		{"gpt-7-whatever", true},
-		{"gpt-6-sol", true},
+		{"gpt-6.1-sol", true},
 		{"gpt-5.5", true},
 		{"gpt-5.2", true},
 		{"gpt-5", true},

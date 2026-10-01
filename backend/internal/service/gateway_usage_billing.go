@@ -759,6 +759,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	subscription := input.Subscription
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
+	for _, round := range result.hostedSearchRounds {
+		ApplyForwardImageBillingResolution(round)
+		ApplyForwardServiceTierBillingResolution(round)
+	}
 
 	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
 	// 用于粘性会话切换时的特殊计费处理
@@ -767,6 +771,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			result.Usage.InputTokens, account.ID)
 		result.Usage.CacheReadInputTokens += result.Usage.InputTokens
 		result.Usage.InputTokens = 0
+		for _, round := range result.hostedSearchRounds {
+			round.Usage.CacheReadInputTokens += round.Usage.InputTokens
+			round.Usage.InputTokens = 0
+		}
 	}
 
 	// Cache TTL Override: 确保计费时 token 分类与账号设置一致。
@@ -774,6 +782,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	cacheTTLOverridden := false
 	if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
 		applyCacheTTLOverride(&result.Usage, overrideTarget)
+		for _, round := range result.hostedSearchRounds {
+			applyCacheTTLOverride(&round.Usage, overrideTarget)
+		}
 		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
 	}
 
@@ -872,6 +883,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			cost.TotalCost, pricingAt,
 			accountStatsLongContextPricingEnabled(nil),
 		)
+		if len(result.hostedSearchRounds) > 0 {
+			usageLog.AccountStatsCost = responsesWebSearchAccountStatsCost(ctx, s.channelService, s.billingService, account.ID, *apiKey.GroupID, result.hostedSearchRounds, result.hostedSearchRoundCosts, cost.TotalCost, pricingAt, accountStatsLongContextPricingEnabled(nil))
+		}
 	}
 
 	simpleModeKeyRateLimitOnly := simpleModeKeyRateLimitBillingEnabled(s.cfg, apiKey)
@@ -927,6 +941,24 @@ func (s *GatewayService) calculateRecordUsageCost(
 	imageMultiplier float64,
 	pricingAt time.Time,
 ) *CostBreakdown {
+	if len(result.hostedSearchRounds) > 0 {
+		var total *CostBreakdown
+		var perRequest *CostBreakdown
+		roundCosts := make([]*CostBreakdown, 0, len(result.hostedSearchRounds))
+		for _, round := range result.hostedSearchRounds {
+			cost := s.calculateRecordUsageCost(ctx, round, apiKey, billingModel, multiplier, imageMultiplier, pricingAt)
+			roundCosts = append(roundCosts, cost)
+			if cost != nil && cost.BillingMode == string(BillingModePerRequest) && round.ImageCount == 0 && round.AudioUsage == nil {
+				if perRequest == nil || cost.ActualCost > perRequest.ActualCost {
+					perRequest = cost
+				}
+				continue
+			}
+			total = addResponsesWebSearchCost(total, cost)
+		}
+		result.hostedSearchRoundCosts = roundCosts
+		return addResponsesWebSearchCost(total, perRequest)
+	}
 	// 图片生成：渠道定价为 token 计费时走 token 路径，否则走图片计费
 	if result.ImageCount > 0 {
 		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {

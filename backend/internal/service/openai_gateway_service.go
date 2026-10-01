@@ -305,6 +305,10 @@ type OpenAIForwardResult struct {
 	// AudioUsage carries Voice billing units when present.
 	AudioUsage *AudioUsage
 
+	// Internal model rounds retain their own pricing context. Summed prompt
+	// tokens must not turn several short rounds into one long-context request.
+	hostedSearchRounds           []*OpenAIForwardResult
+	hostedSearchRoundCosts       []*CostBreakdown
 	wsReplayInput                []json.RawMessage
 	wsReplayInputExists          bool
 	wsAccountFailoverReplayInput []json.RawMessage

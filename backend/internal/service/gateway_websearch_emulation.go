@@ -52,6 +52,11 @@ func getWebSearchManager() *websearch.Manager {
 // Judgment chain: manager exists → only web_search tool → global enabled → account/channel enabled.
 // Account-level mode: "enabled" (force on), "disabled" (force off), "default" (follow channel).
 func (s *GatewayService) shouldEmulateWebSearch(ctx context.Context, account *Account, groupID *int64, body []byte) bool {
+	// Responses overrides on other platforms must not enable this legacy
+	// Anthropic-only Messages shortcut.
+	if account == nil || account.Platform != PlatformAnthropic {
+		return false
+	}
 	if getWebSearchManager() == nil {
 		return false
 	}

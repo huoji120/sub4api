@@ -614,7 +614,7 @@ export default {
       },
       webSearchEmulation: {
         title: 'Web Search Emulation',
-        description: 'Inject web search capability for Anthropic API Key accounts that don\'t natively support it',
+        description: 'Provide and execute server-hosted web_search on enabled HTTP Responses routes, without client tool registration or execution. Explicit tool_choice none is respected. Account/channel settings select which routes opt in. Legacy Anthropic pure-search requests still use the existing shortcut.',
         enabled: 'Enable Web Search Emulation',
         enabledHint: 'Global switch. When disabled, web search emulation is inactive for all channels and accounts.',
         providers: 'Search Providers',

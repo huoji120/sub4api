@@ -1033,7 +1033,7 @@ export default {
         apiKeyAuthSchemeBearer: 'Authorization: Bearer',
         webSearchEmulation: 'Web Search 模拟',
         webSearchEmulationDesc:
-          '为该 API Key 账号启用 web search 模拟。客户端发送纯 web_search 请求时，由网关调用第三方搜索 API 并构造响应返回。默认跟随渠道配置。',
+          '默认跟随渠道；开启/关闭可覆盖渠道配置，但仍受全局开关控制。HTTP Responses 由服务端向模型提供 web_search 并执行搜索，客户端无需注册或执行工具；显式 tool_choice none 不启用搜索。旧版 Anthropic 请求仍仅处理纯搜索快捷请求。',
         webSearchDefault: '默认',
         webSearchEnabled: '开启',
         webSearchDisabled: '关闭',

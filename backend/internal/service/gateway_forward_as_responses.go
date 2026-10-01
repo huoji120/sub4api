@@ -35,6 +35,18 @@ func (s *GatewayService) ForwardAsResponses(
 	body []byte,
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
+	return s.ForwardResponsesWithWebSearch(ctx, c, account, body, func(next []byte) (*ForwardResult, error) {
+		return s.forwardAsResponsesWithoutHostedWebSearch(ctx, c, account, next, parsed)
+	})
+}
+
+func (s *GatewayService) forwardAsResponsesWithoutHostedWebSearch(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	parsed *ParsedRequest,
+) (*ForwardResult, error) {
 	startTime := time.Now()
 
 	normalizedBody, normalized, err := normalizeOpenAIResponsesLegacyIngress(body)

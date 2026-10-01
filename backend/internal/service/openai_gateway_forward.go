@@ -19,6 +19,15 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	if responsesWebSearchEnabled(ctx, c, account, s.settingService, s.channelService) {
+		return forwardHostedResponsesWebSearch(ctx, c, account, body, func(next []byte) (*OpenAIForwardResult, error) {
+			return s.forwardWithoutHostedWebSearch(ctx, c, account, next)
+		}, mergeOpenAIWebSearchResult, executeResponsesWebSearch)
+	}
+	return s.forwardWithoutHostedWebSearch(ctx, c, account, body)
+}
+
+func (s *OpenAIGatewayService) forwardWithoutHostedWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	if account.IsOpenAIBPS() {
 		return s.forwardOpenAIBPS(ctx, c, account, body)
 	}

@@ -2129,9 +2129,9 @@
         </div>
       </div>
 
-      <!-- Anthropic API Key: Web Search Emulation (hidden when global disabled) -->
+      <!-- API Key: Web Search Emulation (hidden when global disabled) -->
       <div
-        v-if="account?.platform === 'anthropic' && account?.type === 'apikey' && webSearchGlobalEnabled"
+        v-if="supportsWebSearchEmulation(account?.platform) && account?.type === 'apikey' && webSearchGlobalEnabled"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3207,6 +3207,7 @@ import {
 } from '@/utils/format'
 import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiError'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { supportsWebSearchEmulation } from '@/utils/webSearchEmulation'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
@@ -4296,6 +4297,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     anthropicAPIKeyAuthScheme.value = extra?.anthropic_apikey_auth_scheme === 'authorization_bearer'
       ? 'authorization_bearer'
       : 'x_api_key'
+  }
+  if (supportsWebSearchEmulation(newAccount.platform) && newAccount.type === 'apikey') {
     // 三态：string "default"/"enabled"/"disabled"，向后兼容旧 bool
     const wsVal = extra?.web_search_emulation
     if (wsVal === 'enabled' || wsVal === 'disabled') {
@@ -5686,7 +5689,7 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    // For Anthropic API Key accounts, handle passthrough mode + web search emulation in extra
+    // For Anthropic API Key accounts, handle passthrough mode in extra
     if (props.account.platform === 'anthropic' && props.account.type === 'apikey') {
       const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
@@ -5699,11 +5702,6 @@ const handleSubmit = async () => {
         newExtra.anthropic_apikey_auth_scheme = 'authorization_bearer'
       } else {
         delete newExtra.anthropic_apikey_auth_scheme
-      }
-      if (webSearchEmulationMode.value === 'default') {
-        delete newExtra.web_search_emulation
-      } else {
-        newExtra.web_search_emulation = webSearchEmulationMode.value
       }
       updatePayload.extra = newExtra
     }
@@ -5834,6 +5832,18 @@ const handleSubmit = async () => {
         }
       }
 
+      updatePayload.extra = newExtra
+    }
+
+    // Compose the search override after platform extras so neither overwrites the other.
+    if (supportsWebSearchEmulation(props.account.platform) && props.account.type === 'apikey') {
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      if (webSearchEmulationMode.value === 'default') {
+        delete newExtra.web_search_emulation
+      } else {
+        newExtra.web_search_emulation = webSearchEmulationMode.value
+      }
       updatePayload.extra = newExtra
     }
 

@@ -175,6 +175,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ApplyOpenAIImageBillingResolution(result)
 	}
 	logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, ApplyOpenAIServiceTierBillingResolution(billingAccount, result))
+	for _, round := range result.hostedSearchRounds {
+		ApplyOpenAIImageBillingResolution(round)
+		ApplyOpenAIServiceTierBillingResolution(billingAccount, round)
+	}
 
 	// OpenAI input_tokens 是总输入，包含缓存读取和缓存写入明细。
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
@@ -486,6 +490,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			tokens, cost.TotalCost, pricingAt,
 			accountStatsLongContextPricingEnabled(longContextBillingGate),
 		)
+		if len(result.hostedSearchRounds) > 0 {
+			usageLog.AccountStatsCost = responsesWebSearchAccountStatsCost(ctx, s.channelService, s.billingService, account.ID, *apiKey.GroupID, result.hostedSearchRounds, result.hostedSearchRoundCosts, cost.TotalCost, pricingAt, accountStatsLongContextPricingEnabled(longContextBillingGate))
+		}
 	}
 
 	simpleModeKeyRateLimitOnly := simpleModeKeyRateLimitBillingEnabled(s.cfg, apiKey)
@@ -571,6 +578,31 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	longContextBillingGate *bool,
 	pricingAt time.Time,
 ) (*CostBreakdown, error) {
+	if result != nil && len(result.hostedSearchRounds) > 0 {
+		var total *CostBreakdown
+		var perRequest *CostBreakdown
+		roundCosts := make([]*CostBreakdown, 0, len(result.hostedSearchRounds))
+		for _, round := range result.hostedSearchRounds {
+			roundTier := serviceTier
+			if serviceTier == optionalStringValue(result.ServiceTier) {
+				roundTier = optionalStringValue(round.ServiceTier)
+			}
+			cost, err := s.calculateOpenAIRecordUsageCost(ctx, round, apiKey, billingModels, multiplier, imageMultiplier, videoMultiplier, webSearchMultiplier, openAIResponsesWebSearchTokens(round.Usage), roundTier, longContextBillingGate, pricingAt)
+			if err != nil {
+				return nil, err
+			}
+			roundCosts = append(roundCosts, cost)
+			if cost != nil && cost.BillingMode == string(BillingModePerRequest) && round.ImageCount == 0 && round.VideoCount == 0 && round.AudioUsage == nil {
+				if perRequest == nil || cost.ActualCost > perRequest.ActualCost {
+					perRequest = cost
+				}
+				continue
+			}
+			total = addResponsesWebSearchCost(total, cost)
+		}
+		result.hostedSearchRoundCosts = roundCosts
+		return addResponsesWebSearchCost(total, perRequest), nil
+	}
 	billingModel := firstUsageBillingModel(billingModels)
 	if result != nil && result.WebSearchCalls > 0 {
 		// Codex alpha/search 网页搜索按次计费：上游不返回 usage/token 字段，单价只取

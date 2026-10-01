@@ -41,7 +41,7 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 
 	// Reasoning models (gpt-5.x) do not accept sampling parameters.
 	// See isReasoningModel in anthropic_to_responses.go.
-	if !isReasoningModel(req.Model) || (openai.IsGPT6SolOrLunaModelSpelling(req.Model) && req.ReasoningEffort == "none") {
+	if !isReasoningModel(req.Model) || (openai.IsGPT6SolFamilyModelSpelling(req.Model) && req.ReasoningEffort == "none") {
 		out.Temperature = req.Temperature
 		out.TopP = req.TopP
 	}

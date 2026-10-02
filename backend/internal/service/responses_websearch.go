@@ -42,6 +42,26 @@ type hostedResponsesWebSearchProviderError struct {
 func (e *hostedResponsesWebSearchProviderError) Error() string { return e.err.Error() }
 func (e *hostedResponsesWebSearchProviderError) Unwrap() error { return e.err }
 
+// hostedResponsesWebSearchCallError marks a search call the model produced but
+// the gateway refused to execute (outside tool_choice, malformed, over limit).
+type hostedResponsesWebSearchCallError struct {
+	err error
+}
+
+func (e *hostedResponsesWebSearchCallError) Error() string { return e.err.Error() }
+func (e *hostedResponsesWebSearchCallError) Unwrap() error { return e.err }
+
+// responsesWebSearchErrorCode labels a failed hosted exchange. Only failures of
+// the search tool itself are web_search_error; an upstream model round that
+// broke (disconnect, HTTP error, truncated stream) is a retryable server_error.
+func responsesWebSearchErrorCode(cause error) string {
+	var callErr *hostedResponsesWebSearchCallError
+	if IsHostedResponsesWebSearchProviderError(cause) || errors.As(cause, &callErr) {
+		return "web_search_error"
+	}
+	return "server_error"
+}
+
 // IsHostedResponsesWebSearchProviderError reports whether a hosted-search
 // failure came from the search provider rather than the model account.
 func IsHostedResponsesWebSearchProviderError(err error) bool {
@@ -56,6 +76,7 @@ type responsesWebSearchReplayEntry struct {
 	call    json.RawMessage
 	result  json.RawMessage
 	pending []json.RawMessage
+	alias   string // streamed public response id -> id of its last model round
 	expires time.Time
 	bytes   int
 }
@@ -83,7 +104,7 @@ func putResponsesWebSearchReplay(scope, id string, entry responsesWebSearchRepla
 		return
 	}
 	entry.expires = time.Now().Add(responsesWebSearchReplayTTL)
-	entry.bytes = len(entry.call) + len(entry.result)
+	entry.bytes = len(entry.call) + len(entry.result) + len(entry.alias)
 	for _, result := range entry.pending {
 		entry.bytes += len(result)
 	}
@@ -236,6 +257,12 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 		return nil, err
 	}
 	previousID := gjson.GetBytes(plan.Body, "previous_response_id").String()
+	if alias, ok := getResponsesWebSearchReplay(scope, "alias:"+previousID); ok && alias.alias != "" {
+		// A streamed multi-round answer is published under its first round id;
+		// the conversation continues from the round that holds the full context.
+		previousID = alias.alias
+		request["previous_response_id"] = rawResponsesSearchJSON(previousID)
+	}
 	if pending, ok := getResponsesWebSearchReplay(scope, "pending:"+previousID); ok {
 		for _, result := range pending.pending {
 			callID := gjson.GetBytes(result, "call_id").String()
@@ -269,6 +296,11 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 	if value := gjson.GetBytes(body, "max_output_tokens"); value.Exists() && value.Type == gjson.Number {
 		remainingTokens = value.Int()
 	}
+	var relay *responsesWebSearchRelay
+	if plan.OriginalStream {
+		relay = newResponsesWebSearchRelay(originalWriter, plan, originalMaxOutputTokens)
+		defer relay.close()
+	}
 
 	finish := func(cause error) (*T, error) {
 		if response == nil {
@@ -281,7 +313,7 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 		}
 		if cause != nil {
 			response["status"] = rawResponsesSearchJSON("failed")
-			response["error"] = rawResponsesSearchJSON(map[string]string{"code": "web_search_error", "message": strings.ReplaceAll(cause.Error(), plan.FunctionName, "web_search")})
+			response["error"] = rawResponsesSearchJSON(map[string]string{"code": responsesWebSearchErrorCode(cause), "message": strings.ReplaceAll(cause.Error(), plan.FunctionName, "web_search")})
 			delete(response, "incomplete_details")
 		}
 		normalizeResponsesWebSearchItems(output)
@@ -322,8 +354,17 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 		if encodeErr != nil {
 			return total, encodeErr
 		}
-		copyResponsesWebSearchHeaders(originalWriter.Header(), responseHeaders)
 		finishResponsesWebSearchResult(total, plan.OriginalStream, time.Since(start), firstTokenMs)
+		if relay != nil && relay.isStarted() {
+			if publicID, lastID := relay.identity(), responsesSearchString(response["id"]); publicID != "" && lastID != "" && publicID != lastID {
+				putResponsesWebSearchReplay(scope, "alias:"+publicID, responsesWebSearchReplayEntry{alias: lastID})
+			}
+			if writeErr := relay.terminal(responsesSearchString(response["status"]), encoded); writeErr != nil {
+				return total, writeErr
+			}
+			return total, cause
+		}
+		copyResponsesWebSearchHeaders(originalWriter.Header(), responseHeaders)
 		if writeErr := writeResponsesWebSearchResponse(c, encoded, plan.OriginalStream); writeErr != nil {
 			return total, writeErr
 		}
@@ -350,7 +391,11 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 			return finish(err)
 		}
 		roundStart := time.Now()
+		roundBase := len(output)
 		capture := &responsesWebSearchRoundWriter{header: make(http.Header), status: http.StatusOK, size: -1}
+		if relay != nil {
+			capture = relay.round(roundBase, sources)
+		}
 		var next *T
 		func() {
 			c.Writer = capture
@@ -385,7 +430,7 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 			if err == nil {
 				err = fmt.Errorf("upstream returned HTTP %d", capture.status)
 			}
-			if response == nil && total == nil {
+			if response == nil && total == nil && (relay == nil || !relay.isStarted()) {
 				if capture.body.Len() > 0 {
 					copyResponsesWebSearchHeaders(originalWriter.Header(), capture.header)
 					originalWriter.WriteHeader(capture.status)
@@ -412,10 +457,18 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 		if err := json.Unmarshal(response["output"], &roundOutput); err != nil {
 			return finish(fmt.Errorf("invalid upstream Responses output: %w", err))
 		}
+		if relay != nil && !capture.relay.streamed {
+			// The adapter answered this round with one JSON object instead of SSE.
+			if err := relay.emitRoundItems(capture.header, response, roundBase, roundOutput, func(index int) bool {
+				return gjson.GetBytes(roundOutput[index], "type").String() == "function_call" && gjson.GetBytes(roundOutput[index], "name").String() == plan.FunctionName
+			}); err != nil {
+				return finish(err)
+			}
+		}
 		var toolResults []json.RawMessage
 		hasClientCall := false
 		status := gjson.GetBytes(response["status"], "@this").String()
-		for _, item := range roundOutput {
+		for roundIndex, item := range roundOutput {
 			kind := gjson.GetBytes(item, "type").String()
 			if kind != "function_call" || gjson.GetBytes(item, "name").String() != plan.FunctionName {
 				output = append(output, item)
@@ -426,27 +479,48 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 			}
 			query := gjson.Get(gjson.GetBytes(item, "arguments").String(), "query").String()
 			searchID := responsesWebSearchIDPrefix + uuid.NewString()
+			publicIndex := len(output)
+			if relay != nil {
+				announced := false
+				if capture.relay.streamed {
+					searchID, announced = capture.relay.searchID(roundIndex)
+					if !announced {
+						searchID = responsesWebSearchIDPrefix + uuid.NewString()
+					}
+				}
+				relay.startSearchCall(publicIndex, searchID, announced)
+			}
 			publicCall := map[string]any{"type": "web_search_call", "id": searchID, "status": "failed", "action": map[string]any{"type": "search", "query": query}}
+			closeCall := func() {
+				raw := rawResponsesSearchJSON(publicCall)
+				output = append(output, raw)
+				if relay != nil {
+					relay.finishSearchCall(publicIndex, searchID, raw)
+				}
+			}
 			if status != "completed" || gjson.GetBytes(item, "status").String() == "incomplete" {
-				output = append(output, rawResponsesSearchJSON(publicCall))
+				closeCall()
 				continue
 			}
 			if !responsesSearchAllowsCall(request["tool_choice"], plan.FunctionName) {
-				output = append(output, rawResponsesSearchJSON(publicCall))
-				return finish(errors.New("model selected web_search outside the permitted tool_choice"))
+				closeCall()
+				return finish(&hostedResponsesWebSearchCallError{err: errors.New("model selected web_search outside the permitted tool_choice")})
 			}
 			if strings.TrimSpace(query) == "" || !gjson.Valid(gjson.GetBytes(item, "arguments").String()) || gjson.Get(gjson.GetBytes(item, "arguments").String(), "query").Type != gjson.String || gjson.GetBytes(item, "call_id").String() == "" {
-				output = append(output, rawResponsesSearchJSON(publicCall))
-				return finish(errors.New("model returned an invalid web search call"))
+				closeCall()
+				return finish(&hostedResponsesWebSearchCallError{err: errors.New("model returned an invalid web search call")})
 			}
 			if searchCalls >= plan.MaxCalls {
-				output = append(output, rawResponsesSearchJSON(publicCall))
-				return finish(fmt.Errorf("web search exceeded max_tool_calls=%d", plan.MaxCalls))
+				closeCall()
+				return finish(&hostedResponsesWebSearchCallError{err: fmt.Errorf("web search exceeded max_tool_calls=%d", plan.MaxCalls)})
 			}
 			searchCalls++
+			if relay != nil {
+				relay.searching(publicIndex, searchID)
+			}
 			results, searchErr := search(ctx, account, query, plan)
 			if searchErr != nil {
-				output = append(output, rawResponsesSearchJSON(publicCall))
+				closeCall()
 				return finish(&hostedResponsesWebSearchProviderError{err: searchErr})
 			}
 			publicCall["status"] = "completed"
@@ -455,7 +529,7 @@ func forwardHostedResponsesWebSearch[T any](ctx context.Context, c *gin.Context,
 				callSources = append(callSources, map[string]string{"type": "url", "url": result.URL})
 			}
 			publicCall["action"] = map[string]any{"type": "search", "query": query, "queries": []string{query}, "sources": callSources}
-			output = append(output, rawResponsesSearchJSON(publicCall))
+			closeCall()
 			sources = append(sources, results.Results...)
 			toolResult := rawResponsesSearchJSON(map[string]any{"type": "function_call_output", "call_id": gjson.GetBytes(item, "call_id").String(), "output": string(rawResponsesSearchJSON(map[string]any{"query": query, "results": results.Results}))})
 			toolResults = append(toolResults, toolResult)
@@ -671,6 +745,8 @@ type responsesWebSearchRoundWriter struct {
 	status int
 	size   int
 	err    error
+	// relay is set for streaming clients: successful SSE is also relayed live.
+	relay *responsesWebSearchRoundRelay
 }
 
 func (w *responsesWebSearchRoundWriter) Header() http.Header { return w.header }
@@ -695,7 +771,7 @@ func (w *responsesWebSearchRoundWriter) Write(data []byte) (int, error) {
 	}
 	n, err := w.body.Write(data)
 	w.size += n
-	return n, err
+	return n, w.relayed(data[:n], err)
 }
 func (w *responsesWebSearchRoundWriter) WriteString(data string) (int, error) {
 	w.WriteHeaderNow()
@@ -705,7 +781,21 @@ func (w *responsesWebSearchRoundWriter) WriteString(data string) (int, error) {
 	}
 	n, err := w.body.WriteString(data)
 	w.size += n
-	return n, err
+	return n, w.relayed([]byte(data[:n]), err)
+}
+
+// relayed forwards buffered SSE to the client; a client disconnect aborts the
+// upstream round through the returned write error.
+func (w *responsesWebSearchRoundWriter) relayed(data []byte, err error) error {
+	if err != nil || w.relay == nil || w.status >= http.StatusBadRequest {
+		return err
+	}
+	w.relay.feed(w.header, data)
+	if clientErr := w.relay.relay.clientErr(); clientErr != nil {
+		w.err = clientErr
+		return clientErr
+	}
+	return nil
 }
 func (w *responsesWebSearchRoundWriter) Flush()                   { w.WriteHeaderNow() }
 func (w *responsesWebSearchRoundWriter) CloseNotify() <-chan bool { return nil }

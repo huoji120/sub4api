@@ -208,7 +208,11 @@ func prepareResponsesWebSearch(body []byte) (*responsesWebSearchPlan, error) {
 		root["include"], _ = json.Marshal(kept)
 	}
 	delete(root, "max_tool_calls")
-	root["stream"] = json.RawMessage("false")
+	// Streaming clients get every model round relayed live; only buffered
+	// clients need the single aggregated JSON response.
+	if !plan.OriginalStream {
+		root["stream"] = json.RawMessage("false")
+	}
 	plan.Body, _ = json.Marshal(root)
 	return plan, nil
 }
@@ -306,85 +310,94 @@ func writeResponsesWebSearchResponse(c *gin.Context, response json.RawMessage, s
 		}
 	}
 	for index, raw := range items {
-		var item map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &item); err != nil || item == nil {
-			return fmt.Errorf("invalid Responses output item at index %d", index)
-		}
-		kind := responsesSearchString(item["type"])
-		id := responsesSearchString(item["id"])
-		fields := func() map[string]any { return map[string]any{"item_id": id, "output_index": index} }
-		added := responsesSearchCopy(item)
-		if _, ok := added["status"]; ok {
-			added["status"] = json.RawMessage(`"in_progress"`)
-		}
-		switch kind {
-		case "message":
-			added["content"] = json.RawMessage(`[]`)
-		case "reasoning":
-			added["summary"] = json.RawMessage(`[]`)
-			if _, ok := added["content"]; ok {
-				added["content"] = json.RawMessage(`[]`)
-			}
-		case "function_call":
-			added["arguments"] = json.RawMessage(`""`)
-		case "custom_tool_call":
-			added["input"] = json.RawMessage(`""`)
-		}
-		if err := emit("response.output_item.added", map[string]any{"output_index": index, "item": added}); err != nil {
-			return err
-		}
-		switch kind {
-		case "web_search_call":
-			for _, phase := range []string{"in_progress", "searching"} {
-				if err := emit("response.web_search_call."+phase, fields()); err != nil {
-					return err
-				}
-			}
-			if responsesSearchString(item["status"]) == "completed" {
-				if err := emit("response.web_search_call.completed", fields()); err != nil {
-					return err
-				}
-			}
-		case "function_call", "custom_tool_call":
-			field, prefix := "arguments", "response.function_call_arguments"
-			if kind == "custom_tool_call" {
-				field, prefix = "input", "response.custom_tool_call_input"
-			}
-			value := responsesSearchString(item[field])
-			payload := fields()
-			payload["delta"] = value
-			if err := emit(prefix+".delta", payload); err != nil {
-				return err
-			}
-			payload = fields()
-			payload[field] = value
-			for _, key := range []string{"name", "call_id", "namespace"} {
-				if raw, ok := item[key]; ok {
-					payload[key] = raw
-				}
-			}
-			if err := emit(prefix+".done", payload); err != nil {
-				return err
-			}
-		case "message", "reasoning":
-			if err := responsesSearchEmitParts(item["content"], kind == "reasoning", false, fields, emit); err != nil {
-				return err
-			}
-			if kind == "reasoning" {
-				if err := responsesSearchEmitParts(item["summary"], true, true, fields, emit); err != nil {
-					return err
-				}
-			}
-		}
-		if kind == "reasoning" && (len(item["summary"]) == 0 || string(item["summary"]) == "null") {
-			item["summary"] = json.RawMessage(`[]`)
-			raw = rawResponsesSearchJSON(item)
-		}
-		if err := emit("response.output_item.done", map[string]any{"output_index": index, "item": raw}); err != nil {
+		if err := emitResponsesWebSearchItem(emit, index, raw); err != nil {
 			return err
 		}
 	}
 	return emit("response."+status, map[string]any{"response": response})
+}
+
+// emitResponsesWebSearchItem frames one completed output item as the native
+// added/delta/done event sequence at the given public output_index.
+func emitResponsesWebSearchItem(emit func(string, map[string]any) error, index int, raw json.RawMessage) error {
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &item); err != nil || item == nil {
+		return fmt.Errorf("invalid Responses output item at index %d", index)
+	}
+	kind := responsesSearchString(item["type"])
+	id := responsesSearchString(item["id"])
+	fields := func() map[string]any { return map[string]any{"item_id": id, "output_index": index} }
+	added := responsesSearchCopy(item)
+	if _, ok := added["status"]; ok {
+		added["status"] = json.RawMessage(`"in_progress"`)
+	}
+	switch kind {
+	case "message":
+		added["content"] = json.RawMessage(`[]`)
+	case "reasoning":
+		added["summary"] = json.RawMessage(`[]`)
+		if _, ok := added["content"]; ok {
+			added["content"] = json.RawMessage(`[]`)
+		}
+	case "function_call":
+		added["arguments"] = json.RawMessage(`""`)
+	case "custom_tool_call":
+		added["input"] = json.RawMessage(`""`)
+	}
+	if err := emit("response.output_item.added", map[string]any{"output_index": index, "item": added}); err != nil {
+		return err
+	}
+	switch kind {
+	case "web_search_call":
+		for _, phase := range []string{"in_progress", "searching"} {
+			if err := emit("response.web_search_call."+phase, fields()); err != nil {
+				return err
+			}
+		}
+		if responsesSearchString(item["status"]) == "completed" {
+			if err := emit("response.web_search_call.completed", fields()); err != nil {
+				return err
+			}
+		}
+	case "function_call", "custom_tool_call":
+		field, prefix := "arguments", "response.function_call_arguments"
+		if kind == "custom_tool_call" {
+			field, prefix = "input", "response.custom_tool_call_input"
+		}
+		value := responsesSearchString(item[field])
+		payload := fields()
+		payload["delta"] = value
+		if err := emit(prefix+".delta", payload); err != nil {
+			return err
+		}
+		payload = fields()
+		payload[field] = value
+		for _, key := range []string{"name", "call_id", "namespace"} {
+			if raw, ok := item[key]; ok {
+				payload[key] = raw
+			}
+		}
+		if err := emit(prefix+".done", payload); err != nil {
+			return err
+		}
+	case "message", "reasoning":
+		if err := responsesSearchEmitParts(item["content"], kind == "reasoning", false, fields, emit); err != nil {
+			return err
+		}
+		if kind == "reasoning" {
+			if err := responsesSearchEmitParts(item["summary"], true, true, fields, emit); err != nil {
+				return err
+			}
+		}
+	}
+	if kind == "reasoning" && (len(item["summary"]) == 0 || string(item["summary"]) == "null") {
+		item["summary"] = json.RawMessage(`[]`)
+		raw = rawResponsesSearchJSON(item)
+	}
+	if err := emit("response.output_item.done", map[string]any{"output_index": index, "item": raw}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func responsesSearchCopy(source map[string]json.RawMessage) map[string]json.RawMessage {

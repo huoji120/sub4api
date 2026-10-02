@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestResponsesSearchServerInjectionAndChoice(t *testing.T) {
@@ -62,10 +63,13 @@ func TestResponsesSearchBuiltinTranslation(t *testing.T) {
 	var after map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(plan.Body, &after))
 	require.NotContains(t, after, "max_tool_calls")
-	require.Equal(t, "false", string(after["stream"]))
+	require.Equal(t, "true", string(after["stream"]), "streaming clients keep upstream streaming")
 	require.JSONEq(t, `["reasoning.encrypted_content"]`, string(after["include"]))
 	require.JSONEq(t, `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"__sub4api_web_search_2"},{"type":"function","name":"__sub4api_web_search"}]}`, string(after["tool_choice"]))
 	require.Contains(t, string(plan.Body), "9007199254740993")
+	buffered, err := prepareResponsesWebSearch([]byte(`{"stream":false,"tools":[{"type":"web_search"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, "false", gjson.GetBytes(buffered.Body, "stream").Raw)
 	forced, err := prepareResponsesWebSearch([]byte(`{"tool_choice":{"type":"web_search"},"tools":[{"type":"web_search"}]}`))
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(forced.Body, &after))

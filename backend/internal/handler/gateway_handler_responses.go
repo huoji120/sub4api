@@ -305,7 +305,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
 			stampForwardRequestedReasoningEffort(res, service.RequestedReasoningEffortFromContext(c.Request.Context()))
-			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+			h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 				if usageErr := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 					Result:             res,
 					QuotaPlatform:      quotaPlatform,

@@ -1379,7 +1379,11 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughHeade
 
 	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "pcache_passthrough"), captureDialer.lastHeaders.Get("session_id"))
 	require.Equal(t, "turn-state-1", captureDialer.lastHeaders.Get(openAIWSTurnStateHeader))
-	require.Equal(t, "turn-meta-1", captureDialer.lastHeaders.Get(openAIWSTurnMetadataHeader))
+	turnMetadata := captureDialer.lastHeaders.Get(openAIWSTurnMetadataHeader)
+	require.NotEmpty(t, turnMetadata)
+	require.Equal(t, "turn", gjson.Get(turnMetadata, "request_kind").String())
+	require.NotEmpty(t, gjson.Get(turnMetadata, "session_id").String())
+	require.NotEmpty(t, gjson.Get(turnMetadata, "thread_id").String())
 	require.Len(t, upstreamConn.writes, 1)
 	forwarded := requestToJSONString(upstreamConn.writes[0])
 	require.False(t, gjson.Get(forwarded, `tools.#(type=="namespace")`).Exists())

@@ -305,9 +305,9 @@ func (runner *CodexHypothesisRunner) checkHeaders(request *http.Request, tickete
 	current := request.Header.Clone()
 	current.Del("Cookie")
 	current.Del(openAICodexTurnStateHeader)
-	if runner.options.Replay != nil {
-		current.Del("x-codex-turn-metadata")
-	}
+	// Turn metadata varies by logical prompt; transport identity and stable
+	// session/thread headers remain part of the baseline comparison.
+	current.Del("x-codex-turn-metadata")
 	if !ticketed && runner.baselineHeaders == nil {
 		runner.baselineHeaders = current
 	}

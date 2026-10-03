@@ -628,7 +628,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			targetURL = buildOpenAIResponsesURLForPlatform(account.Platform, validatedURL)
 		}
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	legacyCompactRequest := isOpenAIResponsesCompactPath(c) && !isOpenAINativeCompactionV2(c)
+	upstreamPathSuffix := openAIResponsesRequestPathSuffix(c)
+	if isOpenAINativeCompactionV2(c) {
+		upstreamPathSuffix = ""
+	}
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, upstreamPathSuffix)
 
 	// DeepSeek / Kimi 原生 Responses 端点为无状态实现（见 normalizeDeepSeekResponsesRequestBody）。
 	body = normalizeDeepSeekResponsesRequestBody(account, body)
@@ -691,7 +696,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
 		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
 		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
-		if isOpenAIResponsesCompactPath(c) {
+		if legacyCompactRequest {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", CodexCanonicalClientVersion())
@@ -718,7 +723,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if clientConversationID != "" {
 			req.Header.Set("conversation_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), clientConversationID))
 		}
-	} else if isOpenAIResponsesCompactPath(c) {
+	} else if legacyCompactRequest {
 		// 透传白名单会放行客户端的 Accept: text/event-stream；compact 上游是
 		// unary JSON 协议，API-key 账号同样强制 Accept，避免上游按 SSE 返回
 		// （#3777 期望行为 4）。
@@ -762,7 +767,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http_passthrough", req.Header, body, "not_applicable")
 
-	body, err = applyCodexRequestMetadata(req, body, account, isOpenAIResponsesCompactPath(c))
+	body, err = applyCodexRequestMetadata(req, body, account, legacyCompactRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -2046,8 +2051,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
 		if data, ok := extractOpenAISSEDataLine(line); ok {
+			data = openAICompatPayloadWithEventType(data, pendingSSEEventType)
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
+			line = "data: " + data
 			rawEventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
 			observer.ObserveOpenAI(dataBytes, rawEventType)
 			if needModelReplace {

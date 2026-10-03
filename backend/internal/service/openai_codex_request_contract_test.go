@@ -67,7 +67,7 @@ func requireCodexDistinctThreadMetadata(t *testing.T, headers http.Header, body 
 	require.Equal(t, session, gjson.Get(metadata, "session_id").String())
 	require.Equal(t, thread, gjson.Get(metadata, "thread_id").String())
 	require.Equal(t, "seatbelt", gjson.Get(metadata, "sandbox").String())
-	require.False(t, gjson.Get(metadata, "turn_started_at_unix_ms").Exists(), "do not invent a timestamp absent from the caller turn")
+	require.Positive(t, gjson.Get(metadata, "turn_started_at_unix_ms").Int(), "Codex metadata should include a turn start timestamp")
 }
 
 func TestCodexRequestMetadataPreservesCanonicalCompactionAndPrecision(t *testing.T) {
@@ -136,4 +136,35 @@ func TestCodexLegacyCompactDoesNotAcquireResponsesMetadataBody(t *testing.T) {
 		require.Equal(t, wireBody, replayed)
 		require.Equal(t, int64(len(wireBody)), request.ContentLength)
 	}
+}
+
+func TestCodexRequestMetadataFillsMissingNativeIdentity(t *testing.T) {
+	account := &Account{ID: 41, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	headers := http.Header{}
+	next, changed, err := normalizeCodexRequestMetadata(body, headers, account, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NotEmpty(t, gjson.GetBytes(next, "client_metadata.x-codex-installation-id").String())
+	require.NotEmpty(t, gjson.GetBytes(next, "client_metadata.session_id").String())
+	require.NotEmpty(t, gjson.GetBytes(next, "client_metadata.thread_id").String())
+	metadata := gjson.GetBytes(next, "client_metadata.x-codex-turn-metadata").String()
+	require.Equal(t, "turn", gjson.Get(metadata, "request_kind").String())
+	require.Positive(t, gjson.Get(metadata, "turn_started_at_unix_ms").Int())
+	require.NotEmpty(t, headers.Get("session-id"))
+	require.NotEmpty(t, headers.Get("thread-id"))
+	require.Equal(t, headers.Get("thread-id"), headers.Get("x-client-request-id"))
+}
+
+func TestPromoteOpenAILegacyCompactToNativeResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"compress"}]}`))
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	body, err := PromoteOpenAILegacyCompactRequest(c, account, []byte(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"compress"}]}`))
+	require.NoError(t, err)
+	require.True(t, IsOpenAINativeCompactionV2(c))
+	require.True(t, gjson.GetBytes(body, "stream").Bool())
+	require.False(t, gjson.GetBytes(body, "store").Bool())
+	require.Equal(t, "compaction_trigger", gjson.GetBytes(body, "input.1.type").String())
 }

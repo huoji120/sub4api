@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -61,6 +62,46 @@ func NormalizeCompactionTriggerInputOrder(body []byte) ([]byte, bool, error) {
 		return body, false, err
 	}
 	return encoded, true, nil
+}
+
+// PromoteOpenAILegacyCompactRequest moves an OpenAI compact request onto the
+// current native Responses compaction wire. Non-OpenAI compatibility providers
+// retain their legacy compact endpoint behavior.
+func PromoteOpenAILegacyCompactRequest(c *gin.Context, account *Account, body []byte) ([]byte, error) {
+	if c == nil || account == nil || !account.IsOpenAI() || !IsOpenAIResponsesCompactPath(c) || IsOpenAINativeCompactionV2(c) {
+		return body, nil
+	}
+	var payload map[string]any
+	if err := decodeOpenAIJSONUseNumber(body, &payload); err != nil {
+		return body, fmt.Errorf("decode legacy compact request: %w", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok {
+		switch value := payload["input"].(type) {
+		case string:
+			input = []any{map[string]any{
+				"type": "message", "role": "user", "content": value,
+			}}
+		case nil:
+			input = []any{}
+		default:
+			return body, fmt.Errorf("legacy compact input must be an array or string")
+		}
+	}
+	input = append(input, map[string]any{"type": "compaction_trigger"})
+	payload["input"] = input
+	payload["stream"] = true
+	payload["store"] = false
+	payloadBytes, err := marshalOpenAIUpstreamJSON(payload)
+	if err != nil {
+		return body, fmt.Errorf("encode native compact request: %w", err)
+	}
+	normalized, _, err := NormalizeCompactionTriggerInputOrder(payloadBytes)
+	if err != nil {
+		return body, fmt.Errorf("append native compact trigger: %w", err)
+	}
+	MarkOpenAINativeCompactionV2(c)
+	return normalized, nil
 }
 
 func isOpenAINativeCompactionV2(c *gin.Context) bool {

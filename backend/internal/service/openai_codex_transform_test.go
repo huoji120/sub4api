@@ -1873,6 +1873,19 @@ func TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields(t *test
 	}
 }
 
+func TestApplyCodexOAuthTransformAddsNativeResponsesDefaults(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.5",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "hi"}},
+	}
+	result := applyCodexOAuthTransform(reqBody, false, false)
+	require.NoError(t, result.Error)
+	require.Equal(t, "auto", reqBody["tool_choice"])
+	require.Equal(t, false, reqBody["parallel_tool_calls"])
+	require.Equal(t, map[string]any{}, reqBody["reasoning"])
+	require.Equal(t, []any{"reasoning.encrypted_content"}, reqBody["include"])
+}
+
 func TestApplyCodexOAuthTransform_NormalizesPromptAndCommands(t *testing.T) {
 	reqBody := map[string]any{
 		"model":    "gpt-5.5",

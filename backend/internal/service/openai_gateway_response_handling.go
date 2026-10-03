@@ -482,8 +482,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			eventType = strings.TrimSpace(eventType)
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 		}
-		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
+			data = openAICompatPayloadWithEventType(data, pendingSSEEventType)
 			dataBytes := []byte(data)
 			eventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
 			if codexFailureTerminal && sawBareError && !sawResponseFailed &&
@@ -2145,6 +2145,8 @@ func responsesStreamEventMayContributeToOutput(eventType string) bool {
 	case "response.output_text.delta",
 		"response.output_item.added",
 		"response.function_call_arguments.delta",
+		"response.custom_tool_call_input.delta",
+		"response.reasoning_text.delta",
 		"response.reasoning_summary_text.delta":
 		return true
 	default:

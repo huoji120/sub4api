@@ -2,11 +2,15 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/tidwall/gjson"
@@ -103,15 +107,24 @@ func normalizeCodexRequestMetadata(body []byte, headers http.Header, account *Ac
 	} else if raw.Exists() {
 		return body, false, nil
 	}
-	changed, err := normalizeCodexClientMetadata(cm, headers, isCompact || HasCompactionTriggerInInput(body))
-	if err != nil || !changed {
+	defaultsChanged, err := ensureCodexClientMetadataDefaults(cm, headers, body, account, false)
+	if err != nil {
 		return body, false, err
+	}
+	changed, err := normalizeCodexClientMetadata(cm, headers, HasCompactionTriggerInInput(body))
+	if err != nil {
+		return body, false, err
+	}
+	changed = changed || defaultsChanged
+	if !changed {
+		return body, false, nil
 	}
 	raw, err := json.Marshal(cm)
 	if err != nil {
 		return body, false, err
 	}
-	next, err := sjson.SetRawBytes(body, "client_metadata", raw)
+	next := body
+	next, err = sjson.SetRawBytes(next, "client_metadata", raw)
 	if err != nil {
 		return body, false, err
 	}
@@ -204,6 +217,126 @@ func normalizeCodexClientMetadata(cm map[string]any, headers http.Header, isComp
 	return changed, nil
 }
 
+func ensureCodexClientMetadataDefaults(cm map[string]any, headers http.Header, body []byte, account *Account, isCompact bool) (bool, error) {
+	if cm == nil || account == nil {
+		return false, nil
+	}
+	metadata := map[string]any{}
+	if raw, ok := cm[openAIWSTurnMetadataHeader].(string); ok && strings.TrimSpace(raw) != "" {
+		if decoded, err := decodeCodexTurnMetadata(raw); err == nil && decoded != nil {
+			metadata = decoded
+		}
+	}
+	if headers != nil {
+		if raw := headers.Get(openAIWSTurnMetadataHeader); strings.TrimSpace(raw) != "" {
+			if decoded, err := decodeCodexTurnMetadata(raw); err == nil {
+				for key, value := range decoded {
+					if _, exists := metadata[key]; !exists {
+						metadata[key] = value
+					}
+				}
+			}
+		}
+	}
+	changed := false
+	set := func(values map[string]any, key, value string) string {
+		if strings.TrimSpace(value) == "" {
+			return ""
+		}
+		if current, ok := values[key].(string); ok && strings.TrimSpace(current) != "" {
+			return strings.TrimSpace(current)
+		}
+		values[key] = value
+		changed = true
+		return value
+	}
+	from := func(values ...any) string {
+		return firstNonEmptyString(values...)
+	}
+	installationID := from(metadata["installation_id"], cm["x-codex-installation-id"], cm["installation_id"])
+	if installationID == "" && headers != nil {
+		installationID = strings.TrimSpace(headers.Get("x-codex-installation-id"))
+	}
+	if installationID == "" {
+		installationID = strings.TrimSpace(account.GetOpenAIDeviceID())
+	}
+	if installationID == "" {
+		installationID = deriveStableUUIDv4(fmt.Sprintf("sub2api:codex-installation:v1:%d", account.ID))
+	}
+	sessionID := from(metadata["session_id"], cm["session_id"])
+	if sessionID == "" && headers != nil {
+		sessionID = from(headers.Get("session-id"), headers.Get("session_id"), headers.Get("conversation_id"))
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	}
+	if sessionID == "" {
+		sessionID = deriveStableUUIDv4(fmt.Sprintf("sub2api:codex-session:v1:%d", account.ID))
+	}
+	threadID := from(metadata["thread_id"], cm["thread_id"])
+	if threadID == "" && headers != nil {
+		threadID = from(headers.Get("thread-id"), headers.Get("thread_id"), headers.Get("x-client-request-id"))
+	}
+	if threadID == "" {
+		threadID = sessionID
+	}
+	bodyDigest := sha256.Sum256(body)
+	turnID := from(metadata["turn_id"], cm["turn_id"])
+	if turnID == "" && headers != nil {
+		turnID = strings.TrimSpace(headers.Get("turn-id"))
+	}
+	if turnID == "" {
+		turnID = deriveStableUUIDv4("sub2api:codex-turn:v1:" + sessionID + ":" + hex.EncodeToString(bodyDigest[:]))
+	}
+	windowID := from(metadata["window_id"], cm["x-codex-window-id"], cm["window_id"])
+	if windowID == "" && headers != nil {
+		windowID = strings.TrimSpace(headers.Get("x-codex-window-id"))
+	}
+	if windowID == "" {
+		windowID = threadID + ":0"
+	}
+	requestKind := from(metadata["request_kind"])
+	if isCompact {
+		requestKind = "compaction"
+	} else if requestKind == "" {
+		requestKind = "turn"
+	}
+
+	set(cm, "x-codex-installation-id", installationID)
+	set(cm, "session_id", sessionID)
+	set(cm, "thread_id", threadID)
+	set(cm, "turn_id", turnID)
+	set(cm, "x-codex-window-id", windowID)
+	set(metadata, "installation_id", installationID)
+	set(metadata, "session_id", sessionID)
+	set(metadata, "thread_id", threadID)
+	set(metadata, "turn_id", turnID)
+	set(metadata, "window_id", windowID)
+	set(metadata, "request_kind", requestKind)
+	if _, exists := metadata["turn_started_at_unix_ms"]; !exists {
+		metadata["turn_started_at_unix_ms"] = time.Now().UnixMilli()
+		changed = true
+	}
+	raw, err := marshalCodexTurnMetadata(metadata)
+	if err != nil {
+		return false, err
+	}
+	if current, ok := cm[openAIWSTurnMetadataHeader].(string); !ok || current != string(raw) {
+		cm[openAIWSTurnMetadataHeader] = string(raw)
+		changed = true
+	}
+	if headers != nil {
+		headers.Set("x-codex-installation-id", installationID)
+		headers.Set("session-id", sessionID)
+		headers.Set("thread-id", threadID)
+		headers.Set("x-client-request-id", threadID)
+		headers.Set("x-codex-window-id", windowID)
+		headers.Set("session_id", sessionID)
+		headers.Set(openAIWSTurnMetadataHeader, string(raw))
+	}
+	return changed, nil
+}
+
 func normalizeCodexRequestMetadataMap(payload map[string]any, headers http.Header, account *Account) error {
 	if account == nil || !account.IsOpenAIOAuthLike() || payload == nil {
 		return nil
@@ -224,11 +357,22 @@ func normalizeCodexRequestMetadataMap(payload map[string]any, headers http.Heade
 			}
 		}
 	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	defaultsChanged, err := ensureCodexClientMetadataDefaults(cm, headers, body, account, isCompact)
+	if err != nil {
+		return err
+	}
 	changed, err := normalizeCodexClientMetadata(cm, headers, isCompact)
-	if err == nil && changed {
+	if err != nil {
+		return err
+	}
+	if defaultsChanged || changed {
 		payload["client_metadata"] = cm
 	}
-	return err
+	return nil
 }
 
 // applyCodexRequestMetadata keeps the HTTP request and the caller's body snapshot

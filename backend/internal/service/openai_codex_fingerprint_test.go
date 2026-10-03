@@ -815,7 +815,7 @@ func TestBuildUpstreamRequestOpenAIPassthrough_OffModeKeepsIsolatedSession(t *te
 
 	assert.NotEmpty(t, req.Header.Get("session_id"))
 	assert.NotEqual(t, resolveConvergedSessionID(testCodexFingerprintSeed), req.Header.Get("session_id"), "off 模式不得收敛 session_id")
-	assert.Empty(t, req.Header.Get("x-codex-window-id"))
+	assert.NotEmpty(t, req.Header.Get("x-codex-window-id"), "Codex metadata defaults should include a context window")
 }
 
 func TestApplyCodexFingerprintClientMetadataRaw_NonObjectBodyUntouched(t *testing.T) {

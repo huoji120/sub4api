@@ -282,7 +282,6 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if normalizeCodexToolChoice(reqBody) {
 		result.Modified = true
 	}
-
 	if v, ok := reqBody["prompt_cache_key"].(string); ok {
 		result.PromptCacheKey = strings.TrimSpace(v)
 		if isOpenAICompatMessagesBridgeRequestBody(reqBody) {
@@ -347,6 +346,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		result.Modified = true
 	}
 
+	if !opts.IsCompact && ensureCodexResponsesDefaults(reqBody) {
+		result.Modified = true
+	}
 	return result
 }
 
@@ -1425,10 +1427,53 @@ func defaultCodexSynthInstructions(model string) string {
 	return "You are a helpful coding assistant."
 }
 
-// ensureCodexReasoningInclude 在请求带 reasoning 时补齐 include:["reasoning.encrypted_content"]。
-//
-// 真实 Codex 在 reasoning 存在时总会请求加密推理内容（ChatGPT/store=false 场景下用于上下文回放）。
-// 该函数为加法式、幂等：仅在 include 缺失或未包含该项时追加；对非数组的异常 include 不做破坏性改写。
+// ensureCodexResponsesDefaults fills fields that the native Codex request
+// builder always serializes. Existing caller values remain authoritative.
+func ensureCodexResponsesDefaults(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	changed := false
+	if _, ok := reqBody["reasoning"]; !ok {
+		reqBody["reasoning"] = map[string]any{}
+		changed = true
+	}
+	if _, ok := reqBody["tool_choice"]; !ok {
+		reqBody["tool_choice"] = "auto"
+		changed = true
+	}
+	if _, ok := reqBody["parallel_tool_calls"]; !ok {
+		reqBody["parallel_tool_calls"] = openAIRequestBodyHasToolsMap(reqBody)
+		changed = true
+	}
+	if _, ok := reqBody["include"]; !ok {
+		reqBody["include"] = []any{"reasoning.encrypted_content"}
+		changed = true
+	} else if ensureCodexReasoningInclude(reqBody) {
+		changed = true
+	}
+	return changed
+}
+
+func openAIRequestBodyHasToolsMap(reqBody map[string]any) bool {
+	if tools, ok := reqBody["tools"].([]any); ok && len(tools) > 0 {
+		return true
+	}
+	input, _ := reqBody["input"].([]any)
+	for _, raw := range input {
+		item, ok := raw.(map[string]any)
+		if !ok || item["type"] != "additional_tools" {
+			continue
+		}
+		if tools, ok := item["tools"].([]any); ok && len(tools) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureCodexReasoningInclude 补齐 Codex Responses 默认的加密 reasoning 输出。
+// 对非数组 include 保持原样，避免覆盖调用方的非法输入并改变原有错误语义。
 func ensureCodexReasoningInclude(reqBody map[string]any) bool {
 	reasoning, ok := reqBody["reasoning"].(map[string]any)
 	if !ok || len(reasoning) == 0 {
@@ -1448,7 +1493,6 @@ func ensureCodexReasoningInclude(reqBody map[string]any) bool {
 		reqBody["include"] = append(existing, encrypted)
 		return true
 	default:
-		// include 为非预期类型时保持原样，避免破坏调用方意图。
 		return false
 	}
 }

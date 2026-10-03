@@ -122,15 +122,17 @@ func TestRewriteOpenAIRequestEnvironmentAmbiguousOrQuoted(t *testing.T) {
 
 func TestNormalizeOpenAIRequestLocaleAndDebugLog(t *testing.T) {
 	first := "<environment_context>\n  <current_date>2026-09-22</current_date>\n  <timezone>Asia/Shanghai</timezone>\n  <cwd>/app</cwd>\n</environment_context>"
-	second := "<environment_context><timezone>Asia/Singapore</timezone></environment_context>"
-	body := localeTestBody([]string{first, second, first}, []string{"environments.environment_context", "environments.environment_context", "user.text"})
+	currentDate := time.Now().In(mustLoadLocation(t, "Asia/Singapore")).Format(time.DateOnly)
+	secondInput := "<environment_context><timezone>Asia/Singapore</timezone></environment_context>"
+	secondExpected := "<environment_context><timezone>Asia/Singapore</timezone>\n  <current_date>" + currentDate + "</current_date>\n</environment_context>"
+	body := localeTestBody([]string{first, secondInput, first}, []string{"environments.environment_context", "environments.environment_context", "user.text"})
 	core, observed := observer.New(zap.DebugLevel)
 	ctx := logger.IntoContext(context.Background(), zap.New(core))
 	out := normalizeOpenAIRequestLocale(ctx, &Account{ID: 42, Platform: PlatformOpenAI}, body, "http")
 	for _, path := range []string{"input.0.content.0.text", "input.0.content.2.text"} {
 		require.Equal(t, strings.Replace(first, "Asia/Shanghai", "Asia/Singapore", 1), gjson.GetBytes(out, path).String())
 	}
-	require.Equal(t, second, gjson.GetBytes(out, "input.0.content.1.text").String())
+	require.Equal(t, secondExpected, gjson.GetBytes(out, "input.0.content.1.text").String())
 	require.Equal(t, gjson.GetBytes(body, "input.0.internal_chat_message_metadata_passthrough").Raw, gjson.GetBytes(out, "input.0.internal_chat_message_metadata_passthrough").Raw)
 	require.Equal(t, "US", gjson.GetBytes(out, "tools.0.user_location.country").String())
 	require.Equal(t, "New York", gjson.GetBytes(out, "tools.0.user_location.city").String())
@@ -139,21 +141,33 @@ func TestNormalizeOpenAIRequestLocaleAndDebugLog(t *testing.T) {
 	fields, err := json.Marshal(observed.All()[0].ContextMap())
 	require.NoError(t, err)
 	require.Contains(t, string(fields), `"timezone_replaced":true`)
+	require.Contains(t, string(fields), `"environment_fields_inserted":true`)
 	require.Contains(t, string(fields), `"matched_count":3`)
 	require.Contains(t, string(fields), `"replaced_count":3`)
+	require.Contains(t, string(fields), `"inserted_count":1`)
 	require.Contains(t, string(fields), `"web_search_timezone_before":["America/New_York"]`)
 	require.Contains(t, string(fields), `"timezone_before":["Asia/Shanghai","Asia/Singapore","Asia/Shanghai"]`)
 	require.NotContains(t, string(fields), "/app")
 	require.NotContains(t, string(fields), "2026-09-22")
 }
 
+func mustLoadLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	location, err := time.LoadLocation(name)
+	require.NoError(t, err)
+	return location
+}
+
 func TestNormalizeOpenAIRequestLocaleNoReplacementStillLogs(t *testing.T) {
-	cases := []struct{ name, text, reason string }{
-		{"already target", "<environment_context><timezone>Asia/Singapore</timezone></environment_context>", "already_target"},
-		{"no timezone", "<environment_context><current_date>old</current_date></environment_context>", "no_timezone"},
-		{"nested value", "<environment_context><timezone><nested/></timezone></environment_context>", "invalid_environment_context"},
-		{"self closing", "<environment_context><timezone/></environment_context>", "invalid_environment_context"},
-		{"ordinary text", "Today in Asia/Shanghai", "no_environment_context"},
+	cases := []struct {
+		name, text, reason string
+		changed            bool
+	}{
+		{"already target", "<environment_context><timezone>Asia/Singapore</timezone></environment_context>", "inserted", true},
+		{"no timezone", "<environment_context><current_date>old</current_date></environment_context>", "inserted", true},
+		{"nested value", "<environment_context><timezone><nested/></timezone></environment_context>", "invalid_environment_context", false},
+		{"self closing", "<environment_context><timezone/></environment_context>", "invalid_environment_context", false},
+		{"ordinary text", "Today in Asia/Shanghai", "no_environment_context", false},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
@@ -165,7 +179,13 @@ func TestNormalizeOpenAIRequestLocaleNoReplacementStillLogs(t *testing.T) {
 			require.Len(t, observed.All(), 1)
 			require.Equal(t, item.reason, observed.All()[0].ContextMap()["reason"])
 			require.Equal(t, false, observed.All()[0].ContextMap()["timezone_replaced"])
-			require.Equal(t, body, out)
+			if item.changed {
+				text := gjson.GetBytes(out, "input.0.content.0.text").String()
+				require.Contains(t, text, "<timezone>Asia/Singapore</timezone>")
+				require.Contains(t, text, "<current_date>")
+			} else {
+				require.Equal(t, body, out)
+			}
 		})
 	}
 	core, observed := observer.New(zap.InfoLevel)
@@ -214,7 +234,10 @@ func TestNormalizeOpenAIRequestLocaleOnlyUserText(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	out := normalizeOpenAIRequestLocale(context.Background(), &Account{Platform: PlatformOpenAI}, body, "http")
-	require.Equal(t, strings.Replace(env, "Asia/Shanghai", "Asia/Singapore", 1), gjson.GetBytes(out, "input.0.content").String())
+	currentDate := time.Now().In(mustLoadLocation(t, "Asia/Singapore")).Format(time.DateOnly)
+	expected := strings.Replace(env, "Asia/Shanghai", "Asia/Singapore", 1)
+	expected = strings.Replace(expected, "</environment_context>", "\n  <current_date>"+currentDate+"</current_date>\n</environment_context>", 1)
+	require.Equal(t, expected, gjson.GetBytes(out, "input.0.content").String())
 	original, rewritten := gjson.GetBytes(body, "input").Array(), gjson.GetBytes(out, "input").Array()
 	for i := 1; i < len(original); i++ {
 		require.Equal(t, original[i].Raw, rewritten[i].Raw)

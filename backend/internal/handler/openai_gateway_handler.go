@@ -428,6 +428,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
+	if isOpenAILegacyCompactPath(c) && gjson.GetBytes(body, "stream").Bool() {
+		service.MarkOpenAICompactClientStream(c)
+	}
 	if openAICompatibleRequestPlatform(c.Request.Context(), apiKey) != service.PlatformOpenAIBPS {
 		body, ok = h.normalizeOpenAIResponsesCompactRequest(c, reqLog, body)
 		if !ok {
@@ -634,7 +637,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	c.Request = c.Request.WithContext(service.WithOpenAIGuardianParentAffinity(
 		c.Request.Context(), c, sessionHashBody, reqModel,
 	))
-	requireCompact := legacyCompact
+	// OpenAI accounts use native Responses compaction; legacy compact capability
+	// remains relevant only for non-OpenAI compatibility providers.
+	requireCompact := legacyCompact && requestPlatform != service.PlatformOpenAI
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -790,6 +795,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
+		if promotedBody, promoteErr := service.PromoteOpenAILegacyCompactRequest(c, account, attemptBody); promoteErr != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+				accountReleaseFunc = nil
+			}
+			h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", promoteErr.Error(), streamStarted)
+			return
+		} else {
+			attemptBody = promotedBody
+		}
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {

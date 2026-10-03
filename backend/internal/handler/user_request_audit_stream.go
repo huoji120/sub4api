@@ -81,6 +81,7 @@ func (w *auditResponseWriter) Pusher() http.Pusher {
 type userRequestAuditRecorder struct {
 	service  *service.UserRequestAuditService
 	key      string
+	protocol string
 	writer   *auditResponseWriter
 	finished bool
 }
@@ -99,7 +100,7 @@ func beginUserRequestAudit(c *gin.Context, svc *service.UserRequestAuditService,
 		groupName = apiKey.Group.Name
 	}
 	capture := service.UserRequestAuditCapture{UserID: userID, APIKeyID: apiKey.ID, GroupID: groupID, GroupName: groupName, Protocol: protocol, Endpoint: endpoint, RequestedModel: model, ClientRequestID: strings.TrimSpace(c.GetHeader("X-Request-ID")), ResponseID: strings.TrimSpace(gjson.GetBytes(body, "response.id").String()), PreviousResponseID: strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()), Body: body, Metadata: map[string]any{"user_agent": c.GetHeader("User-Agent")}}
-	rec := &userRequestAuditRecorder{service: svc, key: svc.Enqueue(capture)}
+	rec := &userRequestAuditRecorder{service: svc, key: svc.Enqueue(capture), protocol: protocol}
 	if rec.key == "" {
 		return rec
 	}
@@ -127,7 +128,6 @@ func (r *userRequestAuditRecorder) Finish(status int, err error, metadata map[st
 		}
 		r.writer.mu.Unlock()
 	}
-	responseID, model := auditResponseFields(raw)
 	if status == 0 {
 		status = http.StatusOK
 	}
@@ -145,7 +145,31 @@ func (r *userRequestAuditRecorder) Finish(status int, err error, metadata map[st
 	if len(raw) > 0 {
 		metadata["response_sha256"] = auditSHA256(raw)
 	}
-	r.service.Complete(service.UserRequestAuditCompletion{LogicalKey: r.key, ResponseID: responseID, UpstreamModel: model, ResponseChatML: auditResponseChatML(raw), Status: state, LastError: auditErrorString(err), Metadata: metadata})
+	completion := service.UserRequestAuditCompletion{LogicalKey: r.key, Status: state, LastError: auditErrorString(err), Metadata: metadata}
+	if r.protocol == service.ContentModerationProtocolTypeSafeSystemOne {
+		// Preserve the actual native response instead of representing answers as
+		// an assistant chat message. Parse the whole JSON, including pretty JSON.
+		completion.ResponseChatML = string(raw)
+		completion.ResponseID = strings.TrimSpace(gjson.GetBytes(raw, "id").String())
+		completion.UpstreamModel = strings.TrimSpace(gjson.GetBytes(raw, "model").String())
+		var envelope struct {
+			Usage map[string]any `json:"usage"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if decoder.Decode(&envelope) == nil {
+			if tokens, ok := envelope.Usage["input_tokens"]; ok {
+				completion.InputUsage = map[string]any{"input_tokens": tokens}
+			}
+			if tokens, ok := envelope.Usage["output_tokens"]; ok {
+				completion.OutputUsage = map[string]any{"output_tokens": tokens}
+			}
+		}
+	} else {
+		completion.ResponseID, completion.UpstreamModel = auditResponseFields(raw)
+		completion.ResponseChatML = auditResponseChatML(raw)
+	}
+	r.service.Complete(completion)
 }
 
 func auditErrorString(err error) string {

@@ -129,14 +129,18 @@ func TestUserPlatformQuotaRepository_BulkInsertInitial_CNProvidersAllowed(t *tes
 		{UserID: userID, Platform: "zhipu", DailyLimitUSD: &daily},
 		{UserID: userID, Platform: "deepseek", DailyLimitUSD: &daily},
 		{UserID: userID, Platform: "minimax", DailyLimitUSD: &daily},
+		{UserID: userID, Platform: "openai_bps", DailyLimitUSD: &daily},
+		{UserID: userID, Platform: "typesafe", DailyLimitUSD: &daily},
 	}
 	require.NoError(t, repo.BulkInsertInitial(txCtx, records),
-		"kimi/zhipu/deepseek/minimax 平台应可写入（CHECK 约束已含国产供应商）")
+		"provider quotas must accept both existing BPS and newly added TypeSafe rows")
 
-	for _, platform := range []string{"kimi", "zhipu", "deepseek", "minimax"} {
+	for _, platform := range []string{"kimi", "zhipu", "deepseek", "minimax", "openai_bps", "typesafe"} {
 		rec, err := repo.GetByUserPlatform(txCtx, userID, platform)
 		require.NoError(t, err)
 		require.NotNil(t, rec, "%s 配额行应已写入", platform)
+		require.Equal(t, platform, rec.Platform)
+		require.InDelta(t, daily, *rec.DailyLimitUSD, 1e-9)
 	}
 }
 

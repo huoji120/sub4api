@@ -27,6 +27,7 @@ import (
 	"github.com/MACOS-DO/sub4api/internal/pkg/openai"
 	"github.com/MACOS-DO/sub4api/internal/pkg/response"
 	"github.com/MACOS-DO/sub4api/internal/pkg/timezone"
+	"github.com/MACOS-DO/sub4api/internal/pkg/typesafe"
 	"github.com/MACOS-DO/sub4api/internal/pkg/xai"
 	"github.com/MACOS-DO/sub4api/internal/service"
 
@@ -48,6 +49,7 @@ func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
 
 // AccountHandler handles admin account management
 type AccountHandler struct {
+	claudeResetCredits      claudeResetReader
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
 	openaiOAuthService      *service.OpenAIOAuthService
@@ -3020,6 +3022,12 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			})
 		}
 		response.Success(c, models)
+		return
+	}
+
+	// TypeSafe accounts serve only the native System One model.
+	if account.IsTypeSafe() {
+		response.Success(c, []claude.Model{{ID: typesafe.JevLatestModel, Type: "model", DisplayName: typesafe.JevLatestModel}})
 		return
 	}
 

@@ -316,11 +316,15 @@ type UpdateSettingsRequest struct {
 	PaymentBalanceRechargeMultiplier *float64 `json:"payment_balance_recharge_multiplier"`
 	PaymentSubscriptionUSDToCNYRate  *float64 `json:"payment_subscription_usd_to_cny_rate"`
 	PaymentRechargeFeeRate           *float64 `json:"payment_recharge_fee_rate"`
-	PaymentLoadBalanceStrat          *string  `json:"payment_load_balance_strategy"`
-	PaymentProductNamePrefix         *string  `json:"payment_product_name_prefix"`
-	PaymentProductNameSuffix         *string  `json:"payment_product_name_suffix"`
-	PaymentHelpImageURL              *string  `json:"payment_help_image_url"`
-	PaymentHelpText                  *string  `json:"payment_help_text"`
+	// nil 表示不更新；空数组表示清空阶梯
+	PaymentRechargeBonusTiers  *[]dto.RechargeBonusTier `json:"payment_recharge_bonus_tiers"`
+	PaymentRechargeBonusMode   *string                  `json:"payment_recharge_bonus_mode"`
+	PaymentRechargeBonusNotice *string                  `json:"payment_recharge_bonus_notice"`
+	PaymentLoadBalanceStrat    *string                  `json:"payment_load_balance_strategy"`
+	PaymentProductNamePrefix   *string                  `json:"payment_product_name_prefix"`
+	PaymentProductNameSuffix   *string                  `json:"payment_product_name_suffix"`
+	PaymentHelpImageURL        *string                  `json:"payment_help_image_url"`
+	PaymentHelpText            *string                  `json:"payment_help_text"`
 
 	// Cancel rate limit
 	PaymentCancelRateLimitEnabled *bool   `json:"payment_cancel_rate_limit_enabled"`
@@ -368,8 +372,9 @@ type UpdateSettingsRequest struct {
 	RiskControlEnabled *bool `json:"risk_control_enabled"`
 
 	// cyber 会话屏蔽开关 + TTL
-	CyberSessionBlockEnabled    *bool `json:"cyber_session_block_enabled"`
-	CyberSessionBlockTTLSeconds *int  `json:"cyber_session_block_ttl_seconds"`
+	CyberSessionBlockEnabled    *bool   `json:"cyber_session_block_enabled"`
+	CyberPolicyUserAllowlist    *string `json:"cyber_policy_user_allowlist"`
+	CyberSessionBlockTTLSeconds *int    `json:"cyber_session_block_ttl_seconds"`
 
 	// OpenAI fast/flex policy (optional, only updated when provided)
 	OpenAIFastPolicySettings *dto.OpenAIFastPolicySettings `json:"openai_fast_policy_settings,omitempty"`
@@ -1511,6 +1516,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	if req.CyberPolicyUserAllowlist != nil {
+		if _, err := service.ParseCyberPolicyUserAllowlist(*req.CyberPolicyUserAllowlist); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+	}
+
 	// cyber 会话屏蔽 TTL 校验：提供时必须 > 0
 	if req.CyberSessionBlockTTLSeconds != nil && *req.CyberSessionBlockTTLSeconds <= 0 {
 		response.BadRequest(c, "cyber_session_block_ttl_seconds must be > 0")
@@ -2041,6 +2053,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.RiskControlEnabled
 		}(),
+		CyberPolicyUserAllowlist: func() string {
+			if req.CyberPolicyUserAllowlist != nil {
+				return *req.CyberPolicyUserAllowlist
+			}
+			return previousSettings.CyberPolicyUserAllowlist
+		}(),
 		CyberSessionBlockEnabled: func() bool {
 			if req.CyberSessionBlockEnabled != nil {
 				return *req.CyberSessionBlockEnabled
@@ -2147,6 +2165,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			BalanceRechargeMultiplier:     req.PaymentBalanceRechargeMultiplier,
 			SubscriptionUSDToCNYRate:      req.PaymentSubscriptionUSDToCNYRate,
 			RechargeFeeRate:               req.PaymentRechargeFeeRate,
+			RechargeBonusTiers:            rechargeBonusTiersFromDTO(req.PaymentRechargeBonusTiers),
+			RechargeBonusMode:             req.PaymentRechargeBonusMode,
+			RechargeBonusNotice:           req.PaymentRechargeBonusNotice,
 			LoadBalanceStrategy:           req.PaymentLoadBalanceStrat,
 			ProductNamePrefix:             req.PaymentProductNamePrefix,
 			ProductNameSuffix:             req.PaymentProductNameSuffix,
@@ -2432,6 +2453,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		PaymentBalanceRechargeMultiplier:                       updatedPaymentCfg.BalanceRechargeMultiplier,
 		PaymentSubscriptionUSDToCNYRate:                        updatedPaymentCfg.SubscriptionUSDToCNYRate,
 		PaymentRechargeFeeRate:                                 updatedPaymentCfg.RechargeFeeRate,
+		PaymentRechargeBonusTiers:                              rechargeBonusTiersToDTO(updatedPaymentCfg.RechargeBonusTiers),
+		PaymentRechargeBonusMode:                               rechargeBonusModeToDTO(updatedPaymentCfg.RechargeBonusMode),
+		PaymentRechargeBonusNotice:                             updatedPaymentCfg.RechargeBonusNotice,
 		PaymentLoadBalanceStrat:                                updatedPaymentCfg.LoadBalanceStrategy,
 		PaymentProductNamePrefix:                               updatedPaymentCfg.ProductNamePrefix,
 		PaymentProductNameSuffix:                               updatedPaymentCfg.ProductNameSuffix,
@@ -2468,6 +2492,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 		RiskControlEnabled:          updatedSettings.RiskControlEnabled,
 		CyberSessionBlockEnabled:    updatedSettings.CyberSessionBlockEnabled,
+		CyberPolicyUserAllowlist:    updatedSettings.CyberPolicyUserAllowlist,
 		CyberSessionBlockTTLSeconds: updatedSettings.CyberSessionBlockTTLSeconds,
 		AccountSchedulingThresholds: updatedSettings.AccountSchedulingThresholds,
 		AllowUserViewErrorRequests:  updatedSettings.AllowUserViewErrorRequests,
@@ -2507,6 +2532,7 @@ func hasPaymentFields(req UpdateSettingsRequest) bool {
 		req.PaymentEnabledTypes != nil || req.PaymentBalanceDisabled != nil ||
 		req.PaymentBalanceRechargeMultiplier != nil || req.PaymentSubscriptionUSDToCNYRate != nil ||
 		req.PaymentRechargeFeeRate != nil ||
+		req.PaymentRechargeBonusTiers != nil || req.PaymentRechargeBonusMode != nil || req.PaymentRechargeBonusNotice != nil ||
 		req.PaymentLoadBalanceStrat != nil || req.PaymentProductNamePrefix != nil ||
 		req.PaymentProductNameSuffix != nil || req.PaymentHelpImageURL != nil ||
 		req.PaymentHelpText != nil || req.PaymentCancelRateLimitEnabled != nil ||

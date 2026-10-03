@@ -232,6 +232,19 @@
             :class="['flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium', form.platform === 'openai_bps' ? 'bg-white text-green-700 shadow-sm dark:bg-dark-600 dark:text-green-400' : 'text-gray-600 dark:text-gray-400']">
             <PlatformIcon platform="openai_bps" size="sm" />OpenAI BPS
           </button>
+          <button
+            type="button"
+            @click="selectTypeSafePlatform()"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'typesafe'
+                ? 'bg-white text-sky-700 shadow-sm dark:bg-dark-600 dark:text-sky-300'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="typesafe" size="sm" />
+            TypeSafe / Jev
+          </button>
         </div>
       </div>
 
@@ -1528,6 +1541,7 @@
             <div v-if="modelRestrictionMode === 'whitelist'">
               <ModelWhitelistSelector
                 v-model="allowedModels"
+                :model-mappings="modelMappings"
                 :platform="form.platform"
                 :sync-credentials="syncPreviewCredentials"
                 @upstream-synced="upstreamModelsPreviewed = true"
@@ -2015,6 +2029,7 @@
           <div v-if="modelRestrictionMode === 'whitelist'">
             <ModelWhitelistSelector
               v-model="allowedModels"
+              :model-mappings="modelMappings"
               platform="anthropic"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
@@ -2356,6 +2371,7 @@
           <div v-if="modelRestrictionMode === 'whitelist'">
             <ModelWhitelistSelector
               v-model="allowedModels"
+              :model-mappings="modelMappings"
               :platform="form.platform"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
@@ -4061,13 +4077,14 @@ const withUpstreamRequestIdHeader = <T extends Record<string, unknown> | undefin
 const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
-  if (form.platform === 'grok') return ''
+  if (form.platform === 'grok' || form.platform === 'typesafe') return ''
   return t('admin.accounts.baseUrlHint')
 })
 
 const apiKeyHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
+  if (form.platform === 'typesafe') return t('admin.accounts.upstream.apiKeyHint')
   if (form.platform === 'grok') return ''
   return t('admin.accounts.apiKeyHint')
 })
@@ -4085,6 +4102,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://generativelanguage.googleapis.com'
     case 'grok':
       return 'https://api.x.ai/v1'
+    case 'typesafe':
+      return 'https://api.typesafe.ai'
     default:
       return 'https://api.anthropic.com'
   }
@@ -4107,6 +4126,8 @@ const apiKeyValuePlaceholder = computed(() => {
     case 'minimax':
     case 'opencode_go':
       return 'sk-...'
+    case 'typesafe':
+      return 'ts-...'
     default:
       return 'sk-ant-...'
   }
@@ -4313,6 +4334,13 @@ function selectOpenCodeGoPlatform() {
   apiKeyBaseUrl.value = defaultCNBaseUrl('opencode_go', openCodeAccountMode.value, 'adaptive')
   resetAdaptiveBaseUrls('opencode_go', openCodeAccountMode.value)
   openCodeGoProtocolRules.value = cloneOpenCodeGoProtocolRules(defaultOpenCodeProtocolRules(openCodeAccountMode.value))
+}
+function selectTypeSafePlatform() {
+  form.platform = 'typesafe'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  apiKeyBaseUrl.value = 'https://api.typesafe.ai'
+  allowedModels.value = ['jev-latest']
 }
 // 账号类型 / 协议变更时同步默认 base url。
 watch(openCodeAccountMode, (mode, previousMode) => {
@@ -4858,6 +4886,11 @@ watch(
 watch(
   [accountCategory, addMethod, antigravityAccountType, () => form.platform],
   ([category, method, agType]) => {
+    // BPS uses its access-token panel, never the generic API-key inputs.
+    if (form.platform === 'openai_bps') {
+      form.type = 'oauth'
+      return
+    }
     // Antigravity upstream 类型（实际创建为 apikey）
     if (form.platform === 'antigravity' && agType === 'upstream') {
       form.type = 'apikey'
@@ -4895,12 +4928,20 @@ watch(
             ? 'https://generativelanguage.googleapis.com'
             : newPlatform === 'grok'
               ? 'https://api.x.ai/v1'
+              : newPlatform === 'typesafe'
+                ? 'https://api.typesafe.ai'
               : 'https://api.anthropic.com'
     }
     // Clear model-related settings
     allowedModels.value = []
     upstreamModelsPreviewed.value = false
     modelMappings.value = []
+    if (newPlatform === 'typesafe') {
+      accountCategory.value = 'apikey'
+      // Grok 等平台会把模式切到映射；TypeSafe 只用白名单写入 jev-latest。
+      modelRestrictionMode.value = 'whitelist'
+      allowedModels.value = ['jev-latest']
+    }
     // Antigravity: 默认使用映射模式并填充默认映射
     if (newPlatform === 'antigravity') {
       antigravityModelRestrictionMode.value = 'mapping'
@@ -5873,6 +5914,8 @@ const handleSubmit = async () => {
         ? 'https://generativelanguage.googleapis.com'
         : form.platform === 'grok'
           ? 'https://api.x.ai/v1'
+          : form.platform === 'typesafe'
+            ? 'https://api.typesafe.ai'
           : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping

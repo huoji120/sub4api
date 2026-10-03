@@ -14,9 +14,9 @@ import (
 	"github.com/MACOS-DO/sub4api/internal/service"
 )
 
-// Including soft-deleted rows must not turn a genuinely missing row or a
-// database failure into a successful, partially applied billing transaction.
-func TestUsageBillingRepositoryApply_KeyUpdateFailureStillRollsBack(t *testing.T) {
+// Missing key counters must not cancel an accepted request's balance charge.
+// Database failures still roll back the entire settlement.
+func TestUsageBillingRepositoryApply_MissingKeySettlesButDatabaseFailureRollsBack(t *testing.T) {
 	dbFailure := errors.New("database unavailable")
 	for _, field := range []string{"quota", "window"} {
 		for _, missing := range []bool{false, true} {
@@ -57,14 +57,21 @@ func TestUsageBillingRepositoryApply_KeyUpdateFailureStillRollsBack(t *testing.T
 						q.WillReturnError(dbFailure)
 					}
 				}
-				mock.ExpectRollback()
-				result, err := NewUsageBillingRepository(nil, db).Apply(context.Background(), cmd)
-				require.Nil(t, result)
-				wantErr := dbFailure
 				if missing {
-					wantErr = service.ErrAPIKeyNotFound
+					mock.ExpectCommit()
+				} else {
+					mock.ExpectRollback()
 				}
-				require.ErrorIs(t, err, wantErr)
+				result, err := NewUsageBillingRepository(nil, db).Apply(context.Background(), cmd)
+				if missing {
+					require.NoError(t, err)
+					require.True(t, result.Applied)
+					require.InDelta(t, 98.75, *result.NewBalance, 1e-8)
+					require.False(t, result.APIKeyQuotaExhausted)
+				} else {
+					require.Nil(t, result)
+					require.ErrorIs(t, err, dbFailure)
+				}
 				require.NoError(t, mock.ExpectationsWereMet())
 			})
 		}

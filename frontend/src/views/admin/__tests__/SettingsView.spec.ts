@@ -1,11 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type DOMWrapper } from "@vue/test-utils";
 
-import enCommon from "@/i18n/locales/en/common";
-import enSettings from "@/i18n/locales/en/admin/settings";
-import zhCommon from "@/i18n/locales/zh/common";
-import zhSettings from "@/i18n/locales/zh/admin/settings";
+import type { DefaultPlatformQuotasMap } from "@/api/admin/settings";
 import SettingsView from "../SettingsView.vue";
 
 const {
@@ -488,6 +485,9 @@ const baseSettingsResponse = {
   payment_balance_recharge_multiplier: 1,
   payment_subscription_usd_to_cny_rate: 0,
   payment_recharge_fee_rate: 0,
+  payment_recharge_bonus_tiers: [],
+  payment_recharge_bonus_mode: "bonus",
+  payment_recharge_bonus_notice: "",
   payment_load_balance_strategy: "round-robin",
   payment_product_name_prefix: "",
   payment_product_name_suffix: "",
@@ -606,27 +606,6 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
   await flushPromises();
 }
 
-describe("admin SettingsView email domain quota copy", () => {
-  it("documents the email domain quota and empty-whitelist behavior in both locales", () => {
-    expect(zhCommon.auth.emailDomainRegistrationLimit).toContain("主流邮箱");
-    expect(zhCommon.auth.emailDomainRegistrationLimit).toContain("联系客服");
-    expect(enCommon.auth.emailDomainRegistrationLimit).toContain("mainstream email");
-    expect(enCommon.auth.emailDomainRegistrationLimit).toContain("contact support");
-
-    // 白名单 hint 描述严格默认语义；额度语义移入独立开关的 hint。
-    const zhWhitelistHint = zhSettings.settings.registration.emailSuffixWhitelistHint;
-    const enWhitelistHint = enSettings.settings.registration.emailSuffixWhitelistHint;
-    expect(zhWhitelistHint).toContain("留空则不限制");
-    expect(enWhitelistHint).toContain("leave empty for no restriction");
-
-    const zhQuotaHint = zhSettings.settings.registration.emailDomainQuotaHint;
-    const enQuotaHint = enSettings.settings.registration.emailDomainQuotaHint;
-    expect(zhQuotaHint).toContain("其他可注册主域名各限注册一个账户");
-    expect(zhQuotaHint).toContain("关闭时非白名单域名直接拒绝");
-    expect(enQuotaHint).toContain("one account");
-    expect(enQuotaHint).toContain("When disabled");
-  });
-});
 
 describe("admin SettingsView payment visible method controls", () => {
   beforeEach(() => {
@@ -1104,6 +1083,108 @@ describe("admin SettingsView payment visible method controls", () => {
         api_key_acl_trust_forwarded_ip: true,
         forwarded_client_ip_headers: ["Cf-Connecting-Ip", "X-Client-Ip"],
       }),
+    );
+  });
+
+  it("loads, edits, and saves recharge bonus tiers and the notice", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      payment_recharge_bonus_tiers: [
+        { min_amount: 500, bonus_percent: 30 },
+        { min_amount: 100, bonus_percent: 20 },
+      ],
+      payment_recharge_bonus_notice: "满 100 送 20%",
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openPaymentTab(wrapper);
+
+    // 回填按阈值升序，并渲染区间预览（首段为「不赠送」）
+    let rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    expect(rows).toHaveLength(2);
+    const minValue = (row: (typeof rows)[number]) =>
+      (row.get('[data-testid="recharge-bonus-tier-min-input"]').element as HTMLInputElement).value;
+    expect(minValue(rows[0]!)).toBe("100");
+    expect(minValue(rows[1]!)).toBe("500");
+    expect(wrapper.get('[data-testid="recharge-bonus-tier-preview"]').text()).toContain(
+      "admin.settings.payment.rechargeBonus.previewRangeNone",
+    );
+
+    await wrapper.get('[data-testid="recharge-bonus-tier-add"]').trigger("click");
+    rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    expect(rows).toHaveLength(3);
+    expect(rows[2]!.find('[data-testid="recharge-bonus-tier-incomplete"]').exists()).toBe(true);
+
+    // 与已有档位重复的阈值行内报错，改成新阈值后消失
+    await rows[2]!.get('[data-testid="recharge-bonus-tier-min-input"]').setValue("100");
+    await rows[2]!.get('[data-testid="recharge-bonus-tier-percent-input"]').setValue("25");
+    rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    expect(rows[2]!.find('[data-testid="recharge-bonus-tier-error"]').exists()).toBe(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(minValue(rows[2]!)).toBe("100");
+    await rows[2]!.get('[data-testid="recharge-bonus-tier-min-input"]').setValue("1000");
+    rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    expect(rows[2]!.find('[data-testid="recharge-bonus-tier-error"]').exists()).toBe(false);
+
+    // 切到折扣模式：百分比 ≥ 100 行内报错，改回 < 100 后消失
+    await wrapper.get('[data-testid="recharge-bonus-mode-discount"]').trigger("click");
+    rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    await rows[2]!.get('[data-testid="recharge-bonus-tier-percent-input"]').setValue("100");
+    rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    expect(rows[2]!.get('[data-testid="recharge-bonus-tier-error"]').text()).toContain("invalidDiscountPercent");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect((rows[2]!.get('[data-testid="recharge-bonus-tier-percent-input"]').element as HTMLInputElement).value).toBe("100");
+    await rows[2]!.get('[data-testid="recharge-bonus-tier-percent-input"]').setValue("25");
+    rows = wrapper.findAll('[data-testid="recharge-bonus-tier-row"]');
+    expect(rows[2]!.find('[data-testid="recharge-bonus-tier-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="recharge-bonus-tier-preview"]').text()).toContain(
+      "admin.settings.payment.rechargeBonus.previewRangeDiscount",
+    );
+
+    const notice = wrapper.get('[data-testid="recharge-bonus-notice-input"]');
+    expect((notice.element as HTMLTextAreaElement).value).toBe("满 100 送 20%");
+    await notice.setValue("**新活动**");
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payment_recharge_bonus_tiers: [
+          { min_amount: 100, bonus_percent: 20 },
+          { min_amount: 500, bonus_percent: 30 },
+          { min_amount: 1000, bonus_percent: 25 },
+        ],
+        payment_recharge_bonus_mode: "discount",
+        payment_recharge_bonus_notice: "**新活动**",
+      }),
+    );
+  });
+
+  it("drops incomplete recharge bonus rows and submits an empty list when cleared", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      payment_recharge_bonus_tiers: [{ min_amount: 100, bonus_percent: 20 }],
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openPaymentTab(wrapper);
+
+    await wrapper.get('[data-testid="recharge-bonus-tier-remove"]').trigger("click");
+    await wrapper.get('[data-testid="recharge-bonus-tier-add"]').trigger("click");
+    expect(wrapper.findAll('[data-testid="recharge-bonus-tier-row"]')).toHaveLength(1);
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_recharge_bonus_tiers: [] }),
     );
   });
 
@@ -2004,112 +2085,112 @@ describe("admin SettingsView platform quota matrix", () => {
     getProviders.mockResolvedValue({ data: [] });
   });
 
-  it("从 baseSettings 加载默认平台配额数据并在 Users tab 渲染 5 平台行", async () => {
-    const wrapper = mountView();
-    await flushPromises();
-    await openUsersTab(wrapper);
+  const savedQuotas: DefaultPlatformQuotasMap = {
+    anthropic: { daily: 10, weekly: 50, monthly: 200 },
+    openai: { daily: null, weekly: 12.5, monthly: null },
+    openai_bps: { daily: 0, weekly: null, monthly: 30 },
+    gemini: { daily: null, weekly: 20, monthly: 100 },
+    antigravity: { daily: 5, weekly: null, monthly: 0 },
+    grok: { daily: 4, weekly: 25, monthly: null },
+    kimi: { daily: 0, weekly: 15, monthly: null },
+    zhipu: { daily: 8, weekly: null, monthly: 60 },
+    deepseek: { daily: null, weekly: 0, monthly: 70 },
+    minimax: { daily: 6, weekly: 40, monthly: null },
+    opencode_go: { daily: null, weekly: 35, monthly: 0 },
+    typesafe: { daily: 3, weekly: 0, monthly: null },
+  };
+  const authSources = ["email", "linuxdo", "oidc", "wechat", "github", "google", "dingtalk"] as const;
 
-    expect(getSettings).toHaveBeenCalled();
+  function quotaInput(table: DOMWrapper<Element>, platform: string, window: "daily" | "weekly" | "monthly") {
+    const row = table.findAll("tbody tr").find(node => node.get("td").text() === platform);
+    expect(row, `quota row for ${platform}`).toBeDefined();
+    const column = ["daily", "weekly", "monthly"].indexOf(window);
+    return row!.findAll('input[type="number"]')[column];
+  }
 
-    const html = wrapper.html();
-    // 表格行的平台字段：font-mono 渲染纯英文 platform key
-    expect(html).toContain("anthropic");
-    expect(html).toContain("openai");
-    expect(html).toContain("gemini");
-    expect(html).toContain("antigravity");
-  });
-
-  it("保存时 updateSettings payload 应包含嵌套 default_platform_quotas 对象（含全 5 平台）", async () => {
-    const wrapper = mountView();
-    await flushPromises();
-    await openUsersTab(wrapper);
-
-    await wrapper.find("form").trigger("submit.prevent");
-    await flushPromises();
-
-    expect(updateSettings).toHaveBeenCalled();
-    const lastCallArgs = updateSettings.mock.calls.at(-1);
-    expect(lastCallArgs).toBeDefined();
-    const payload = lastCallArgs![0] as Record<string, unknown>;
-
-    // 应携带嵌套对象，而非扁平字段
-    expect(payload).toHaveProperty("default_platform_quotas");
-    const quotas = payload["default_platform_quotas"] as Record<string, unknown>;
-    const platforms = ["anthropic", "openai", "gemini", "antigravity", "grok"];
-    for (const p of platforms) {
-      expect(quotas).toHaveProperty(p);
-      const pq = quotas[p] as Record<string, unknown>;
-      expect(pq).toHaveProperty("daily");
-      expect(pq).toHaveProperty("weekly");
-      expect(pq).toHaveProperty("monthly");
-    }
-
-    // 不应存在旧扁平字段
-    expect(payload).not.toHaveProperty("default_platform_quota_anthropic_daily");
-    expect(payload).not.toHaveProperty("default_platform_quota_openai_weekly");
-  });
-
-  it("加载后 form.default_platform_quotas 含全 5 平台，从嵌套 JSON 正确读取数值", async () => {
+  it("preserves every provider's limits and disabled auth-source quotas when saving an unrelated setting", async () => {
+    const sourceSettings = Object.fromEntries(authSources.flatMap((source, index) => [
+      [`auth_source_default_${source}_platform_quotas`, {
+        ...savedQuotas,
+        kimi: { daily: index + 1, weekly: 0, monthly: null },
+      }],
+      [`auth_source_default_${source}_grant_on_signup`, false],
+      [`auth_source_default_${source}_grant_on_first_bind`, source === "oidc"],
+      [`auth_source_default_${source}_balance`, index + 2],
+      [`auth_source_default_${source}_concurrency`, index + 3],
+      [`auth_source_default_${source}_subscriptions`, []],
+    ]));
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
-      default_platform_quotas: {
-        anthropic: { daily: 5, weekly: null, monthly: null },
-        openai:    { daily: null, weekly: 12.5, monthly: null },
-        // gemini / antigravity 缺失 → 应被归一化为全 null
-      },
+      default_platform_quotas: savedQuotas,
+      ...sourceSettings,
     });
-
     const wrapper = mountView();
     await flushPromises();
     await openUsersTab(wrapper);
 
-    await wrapper.find("form").trigger("submit.prevent");
+    const table = wrapper.get('[data-testid="default-platform-quotas"]');
+    for (const [platform, limits] of Object.entries(savedQuotas)) {
+      for (const window of ["daily", "weekly", "monthly"] as const) {
+        expect((quotaInput(table, platform, window).element as HTMLInputElement).value)
+          .toBe(limits[window] === null ? "" : String(limits[window]));
+      }
+    }
+    const concurrencyInput = wrapper.findAll('input[type="number"]').find(node =>
+      node.element.previousElementSibling?.textContent?.trim() === "admin.settings.defaults.defaultConcurrency",
+    )!;
+    await concurrencyInput.setValue("9");
+    await wrapper.get("form").trigger("submit.prevent");
     await flushPromises();
 
-    const payload = updateSettings.mock.calls.at(-1)![0] as Record<string, unknown>;
-    const quotas = payload["default_platform_quotas"] as Record<string, Record<string, unknown>>;
-
-    expect(quotas["anthropic"]?.["daily"]).toBe(5);
-    expect(quotas["openai"]?.["weekly"]).toBe(12.5);
-    // 缺失平台应补全为 null
-    expect(quotas["gemini"]).toEqual({ daily: null, weekly: null, monthly: null });
-    expect(quotas["antigravity"]).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    const payload = updateSettings.mock.calls[0][0];
+    expect(payload.default_concurrency).toBe(9);
+    expect(payload.default_platform_quotas).toEqual(savedQuotas);
+    expect(payload).toMatchObject(sourceSettings);
+    expect(payload.registration_enabled).toBe(baseSettingsResponse.registration_enabled);
+    expect(payload.default_balance).toBe(baseSettingsResponse.default_balance);
+    wrapper.unmount();
   });
 
-  it("空输入（v-model.number 产出 \"\"）在提交时清洗为 null 而非空字符串", async () => {
-    // 模拟后端返回带有 anthropic daily 值的配额
+  it("cleans edited quota inputs in both matrices without changing untouched providers or auth sources", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
-      default_platform_quotas: {
-        anthropic: { daily: 10, weekly: null, monthly: null },
-        openai:    { daily: null, weekly: null, monthly: null },
-        gemini:    { daily: null, weekly: null, monthly: null },
-        antigravity: { daily: null, weekly: null, monthly: null },
-      },
+      default_platform_quotas: savedQuotas,
+      auth_source_default_email_grant_on_signup: true,
+      auth_source_default_email_platform_quotas: savedQuotas,
+      auth_source_default_linuxdo_platform_quotas: savedQuotas,
     });
-
     const wrapper = mountView();
     await flushPromises();
     await openUsersTab(wrapper);
+    const defaults = wrapper.get('[data-testid="default-platform-quotas"]');
+    const email = wrapper.get('[data-testid="auth-source-email-panel"]').get("table");
 
-    // 找到 anthropic daily 输入框并清空（模拟用户删除值）
-    const inputs = wrapper.findAll('input[type="number"]');
-    const anthropicDailyInput = inputs.find((i) => {
-      const parent = i.element.closest("tr");
-      return parent?.textContent?.includes("anthropic");
-    });
-
-    if (anthropicDailyInput) {
-      // 设置为空字符串，模拟 v-model.number 在清空时产出 ""
-      await anthropicDailyInput.setValue("");
-    }
-
-    await wrapper.find("form").trigger("submit.prevent");
+    await quotaInput(defaults, "openai_bps", "monthly").setValue("");
+    await quotaInput(defaults, "typesafe", "daily").setValue("0");
+    await quotaInput(defaults, "deepseek", "monthly").setValue("-1");
+    await quotaInput(email, "kimi", "weekly").setValue("");
+    await quotaInput(email, "zhipu", "daily").setValue("0");
+    await quotaInput(email, "opencode_go", "weekly").setValue("-1");
+    await wrapper.get("form").trigger("submit.prevent");
     await flushPromises();
 
-    const payload = updateSettings.mock.calls.at(-1)![0] as Record<string, unknown>;
-    const quotas = payload["default_platform_quotas"] as Record<string, Record<string, unknown>>;
-    // 不管输入是什么，提交值应为 null（而非 "" 或 NaN）
-    expect(quotas["anthropic"]?.["daily"]).toBe(null);
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    const payload = updateSettings.mock.calls[0][0];
+    expect(payload.default_platform_quotas).toEqual({
+      ...savedQuotas,
+      openai_bps: { ...savedQuotas.openai_bps, monthly: null },
+      typesafe: { ...savedQuotas.typesafe, daily: 0 },
+      deepseek: { ...savedQuotas.deepseek, monthly: null },
+    });
+    expect(payload.auth_source_default_email_platform_quotas).toEqual({
+      ...savedQuotas,
+      kimi: { ...savedQuotas.kimi, weekly: null },
+      zhipu: { ...savedQuotas.zhipu, daily: 0 },
+      opencode_go: { ...savedQuotas.opencode_go, weekly: null },
+    });
+    expect(payload.auth_source_default_linuxdo_platform_quotas).toEqual(savedQuotas);
+    wrapper.unmount();
   });
 });

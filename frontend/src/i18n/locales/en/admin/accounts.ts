@@ -210,6 +210,12 @@ export default {
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
       failedToToggleSchedulable: 'Failed to toggle scheduling status',
+      priorityQuick: {
+        raise: 'Raise priority (value -1)',
+        lower: 'Lower priority (value +1)',
+        editHint: 'Click to type a value; lower is used first',
+        failed: 'Failed to update priority'
+      },
       groupCountTotal: '{count} groups total',
       platforms: {
         anthropic: 'Anthropic',
@@ -223,6 +229,7 @@ export default {
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
+        typesafe: 'TypeSafe / Jev',
       },
       cnProviders: {
         accountMode: {
@@ -965,6 +972,7 @@ export default {
       enterCustomModelName: 'Enter custom model name',
       addModel: 'Add',
       modelExists: 'Model already exists',
+      modelMappingConflict: 'A mapping already exists for {from} → {to}. Modify or remove it under Model Mapping before adding this whitelist model',
       modelCount: '{count} models',
       poolMode: 'Pool Mode',
       poolModeHint: 'Enable when upstream is an account pool; errors won\'t mark local account status',
@@ -979,7 +987,7 @@ export default {
       customErrorCodes: 'Custom Error Codes',
       customErrorCodesHint: 'Only stop scheduling for selected error codes',
       customErrorCodesWarning:
-        'Only selected error codes will stop scheduling. Other errors will return 500.',
+        'Custom error codes only filter normal account-error handling (such as stopping scheduling or marking rate limits). They do not decide whether a request is retried or switched to another account. Unselected errors may still trigger a retry or an account switch, and the status returned to the client depends on the gateway path and error-passthrough rules; it is not always 500. An empty list applies no filtering.',
       customErrorCodes429Warning:
         '429 already has built-in rate limit handling. Adding it to custom error codes will disable the account instead of temporary rate limiting. Are you sure?',
       customErrorCodes529Warning:
@@ -1062,7 +1070,47 @@ export default {
 	  autoPause5hDisabled: 'Disable 5h auto-pause',
 	  autoPause7dDisabled: 'Disable 7d auto-pause',
 	  autoPauseDisabledHint: 'When enabled, this account is never auto-paused (even if a global default threshold is configured).',
-	  autoResetCredit: {
+	  claudeResetCredits: {
+	    count: 'Resets',
+	    countTooltipLoad: 'Check remaining Claude resets (read-only, never consumes one)',
+	    countTooltipRefresh: 'Refresh remaining Claude resets (read-only, never consumes one)',
+	    fetched: 'Checked at {time}',
+	    error: 'Could not check reset credits',
+	    ineligible: 'This account cannot use resets right now',
+	    cooldown: 'Cooldown until {time}',
+	    expiresAt: 'Expires {time}',
+	    expiresAtFull: 'Reset credit expires at: {time}',
+	    clears: 'Clears windows: {windows}',
+	    notUsableNow: 'Not usable now',
+	    requiresLimit: 'Usable only after hitting a limit',
+	    reset: 'Reset',
+	    resetTooltipNeedQuery: 'Check the count first; reset is available once a usable credit is found',
+	    resetTooltipNone: 'No reset can be used right now',
+	    resetTooltipReady: 'Consume 1 reset to clear limit windows (asks for confirmation)',
+	    confirmTitle: 'Confirm Claude Reset',
+	    confirmMessage: 'This will consume 1 reset credit to immediately restore the {windows} window(s) ({count} remaining). This action cannot be undone. Continue?',
+	    windows: {
+	      fiveHour: '5h',
+	      sevenDay: '7d',
+	      sevenDayOverage: '7d overage'
+	    },
+	    outcome: {
+	      reset: 'Reset applied; cleared: {windows}',
+	      alreadyUsed: 'This reset was already used; refreshing to confirm',
+	      cooldown: 'Resets are cooling down; try again later',
+	      cooldownUntil: 'Resets are cooling down until {time}',
+	      notLimited: 'Not at a limit, so nothing was reset and no credit was used',
+	      ineligible: 'This account cannot use resets right now',
+	      unknown: 'Result unconfirmed; further redemption is blocked for now. Check again later',
+	      unavailable: 'Reset service is temporarily unavailable; retry after a while',
+	      inProgress: 'This reset request is still processing; check again shortly',
+	      retryBackoff: 'This reset request just failed; retry after a moment',
+	      busy: 'Another reset is in progress; try again later',
+	      notAvailable: 'No reset can be used right now; no credit was used',
+	      failed: 'Reset request failed'
+	    }
+	  },
+      autoResetCredit: {
 	    title: 'Automatically use reset credits',
 	    hint: 'Uses the earliest-expiring available credit only when actual usage reaches a threshold. Off by default; the account remains paused if no credit is available or reset fails.',
 	    threshold5h: '5h auto-reset threshold (%)',

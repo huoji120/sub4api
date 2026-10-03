@@ -477,6 +477,27 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
 		}
 		return
 	}
+	if deps.billingCacheService.InflightReservationEnabled() {
+		// 在途预留开启时同步扣减余额缓存：计费任务结束后才会释放预留，
+		// 必须保证此时准入读取的缓存余额已反映本次扣费，否则释放与扣减之间
+		// 仍存在「在途=0 且余额未扣」的窗口。本函数运行在计费 worker 中，不在请求热路径。
+		err := deps.billingCacheService.DeductBalanceCache(ctx, p.User.ID, p.Cost.ActualCost)
+		if err == nil {
+			return
+		}
+		logger.LegacyPrintf("service.gateway", "Warning: sync deduct balance cache failed for user %d, invalidating cache: %v", p.User.ID, err)
+		// DB 扣费已提交；Redis 错误可能发生在扣减已执行之后，因此不能重试扣减或异步入队。
+		// 同步失效完成后才归还计费任务的预留，让下次准入从 DB 加载已提交余额。
+		// 若失效也失败，遵循现有 Redis 故障策略：记录警告并返回，不延长预留或重试；
+		// 旧缓存可能暂时残留，直到过期或 Redis 恢复，不能保证该故障期间的余额准入。
+		if err := deps.billingCacheService.InvalidateUserBalance(ctx, p.User.ID); err != nil {
+			slog.Warn("invalidate balance cache after sync deduction failure failed",
+				"user_id", p.User.ID,
+				"error", err,
+			)
+		}
+		return
+	}
 	deps.billingCacheService.QueueDeductBalance(p.User.ID, p.Cost.ActualCost)
 }
 

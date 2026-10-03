@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -31,6 +32,7 @@ const (
 var userRequestAuditProtocols = map[string]struct{}{
 	"anthropic_messages": {}, "openai_responses": {},
 	"openai_chat_completions": {}, "openai_responses_ws": {},
+	ContentModerationProtocolTypeSafeSystemOne: {},
 }
 
 type UserRequestAudit struct {
@@ -246,13 +248,19 @@ func (s *UserRequestAuditService) Enqueue(capture UserRequestAuditCapture) strin
 		return ""
 	}
 	fallback := UserRequestAuditFallbackHash(capture.UserID, capture.GroupID, capture.Body)
+	var requestEvidence string
+	if capture.Protocol == ContentModerationProtocolTypeSafeSystemOne {
+		requestEvidence = projectNativeUserRequestAudit(capture.Body)
+	} else {
+		requestEvidence = ProjectUserRequestChatML(capture.Body)
+	}
 	audit := &UserRequestAudit{
 		CreatedAt: time.Now().UTC(),
 		UserID:    capture.UserID, APIKeyID: capture.APIKeyID, GroupID: cloneAuditGroupID(capture.GroupID),
 		GroupName: bound(capture.GroupName, 256), Protocol: capture.Protocol, Endpoint: bound(capture.Endpoint, 512),
 		RequestedModel: bound(capture.RequestedModel, 256), ClientRequestID: bound(capture.ClientRequestID, 256),
 		ResponseID: bound(capture.ResponseID, 256), PreviousResponseID: bound(capture.PreviousResponseID, 256),
-		FallbackHash: fallback, RequestChatML: ProjectUserRequestChatML(capture.Body), Status: "received",
+		FallbackHash: fallback, RequestChatML: requestEvidence, Status: "received",
 		Metadata: boundedMap(capture.Metadata), LogicalKey: userRequestAuditLogicalKey(capture, fallback),
 	}
 	s.enqueue(func(ctx context.Context) {
@@ -696,6 +704,19 @@ func UserRequestAuditFallbackHash(userID int64, groupID *int64, body []byte) str
 // UserRequestAuditNormalizeContent is used only for association, never for saved ChatML.
 func UserRequestAuditNormalizeContent(raw string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+}
+
+// System One's state/questions are native structured data, not chat messages.
+// Keep the whole envelope (including provider extensions) without inventing roles.
+func projectNativeUserRequestAudit(body []byte) string {
+	var doc map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&doc); err != nil {
+		return "[unparsed request redacted]"
+	}
+	encoded, _ := json.Marshal(userRequestAuditRedactValue(doc))
+	return bound(string(encoded), userRequestAuditMaxChatML)
 }
 
 func ProjectUserRequestChatML(body []byte) string {

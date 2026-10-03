@@ -10,9 +10,9 @@ import (
 )
 
 var codexToolCapabilityFields = []string{
+	"service_tiers",
 	"supports_search_tool", "apply_patch_tool_type", "comp_hash", "tool_mode", "use_responses_lite",
 	"multi_agent_reasoning_effort", "multi_agent_version",
-	"service_tiers",
 }
 
 func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite bool) bool {
@@ -98,6 +98,17 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 		if disabled && bytes.Equal(capabilities["use_responses_lite"], []byte("true")) {
 			capabilities["use_responses_lite"] = json.RawMessage("false")
 		}
+	}
+	// API Astra publicly supports Ultrafast. OAuth must advertise it in its
+	// account manifest; a subscription label alone does not grant the capability.
+	if account.IsOpenAIApiKey() && isOfficialOpenAIModelsBaseURL(baseURL) && isOpenAIGPT6AstraModel(modelID) {
+		tiers := configuredCodexServiceTiersForModel(modelID)
+		tiers = append(tiers, configuredCodexServiceTier{ID: OpenAIFastTierUltrafast, Name: "Ultrafast", Description: "Lowest latency; 6x Standard token pricing."})
+		encoded, err := json.Marshal(tiers)
+		if err != nil {
+			panic(err)
+		}
+		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"service_tiers": encoded}, false)
 	}
 	return capabilities
 }

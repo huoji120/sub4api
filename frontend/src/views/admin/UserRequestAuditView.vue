@@ -94,7 +94,7 @@
           <template #cell-created_at="{ value }"><span class="whitespace-nowrap">{{ formatTime(value) }}</span></template>
           <template #cell-user_id="{ value }"><span class="whitespace-nowrap">{{ value || '—' }}</span></template>
           <template #cell-group="{ row }"><span>{{ row.group_name || row.group_id || '—' }}</span></template>
-          <template #cell-request="{ row }"><div class="max-w-xs truncate font-mono text-xs">{{ row.protocol }} · {{ row.endpoint }}<br />{{ row.requested_model || '—' }}</div></template>
+          <template #cell-request="{ row }"><div class="max-w-xs truncate font-mono text-xs">{{ protocolLabel(row.protocol) }} · {{ row.endpoint }}<br />{{ row.requested_model || '—' }}</div></template>
           <template #cell-status="{ value }"><span class="font-medium">{{ value }}</span></template>
           <template #cell-actions="{ row }"><button class="text-primary-600" @click="openDetail(row.id)">{{ t('admin.userRequestAudit.detail') }}</button></template>
           <template #empty><div class="py-8 text-center text-sm text-gray-500">{{ t('admin.userRequestAudit.empty') }}</div></template>
@@ -170,7 +170,7 @@ let detailRequest = 0
 
 const filters = reactive<Record<string, string>>({ user_id: '', group_id: '', group_name: '', q: '', requested_model: '', response_id: '', client_request_id: '', status: '', protocol: '', start_time: '', end_time: '' })
 const filterFields = ['q', 'user_id', 'group_id', 'group_name', 'requested_model', 'response_id', 'client_request_id', 'start_time', 'end_time']
-const protocolOptions = [{ value: '', label: '—' }, { value: 'anthropic_messages', label: 'Anthropic' }, { value: 'openai_responses', label: 'OpenAI Responses' }, { value: 'openai_chat_completions', label: 'OpenAI Chat' }, { value: 'openai_responses_ws', label: 'Responses WS' }]
+const protocolOptions = [{ value: '', label: '—' }, { value: 'anthropic_messages', label: 'Anthropic' }, { value: 'openai_responses', label: 'OpenAI Responses' }, { value: 'openai_chat_completions', label: 'OpenAI Chat' }, { value: 'openai_responses_ws', label: 'Responses WS' }, { value: 'typesafe_systemone', label: 'TypeSafe System One' }]
 const exportOptions = [{ value: 'jsonl', label: 'JSONL' }, { value: 'json', label: 'JSON' }]
 const columns = computed<Column[]>(() => [
   { key: 'created_at', label: t('admin.userRequestAudit.created') },
@@ -181,6 +181,10 @@ const columns = computed<Column[]>(() => [
   { key: 'actions', label: '' }
 ])
 const detailKeys = ['id', 'created_at', 'updated_at', 'expires_at', 'user_id', 'api_key_id', 'group_id', 'group_name', 'protocol', 'endpoint', 'requested_model', 'upstream_model', 'client_request_id', 'response_id', 'previous_response_id', 'fallback_hash', 'status', 'input_usage', 'output_usage', 'cache_usage', 'conversation_key', 'last_error'] as const
+
+function protocolLabel(protocol: string) {
+  return protocolOptions.find(option => option.value === protocol)?.label || protocol
+}
 
 function formatTime(value?: string) {
   if (!value) return '—'

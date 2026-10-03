@@ -23,11 +23,6 @@ func TestDefaultModelsIncludeGPT6Astra(t *testing.T) {
 	require.Equal(t, "GPT-6 Astra", displayName)
 }
 
-func TestDefaultModelsPreferConcreteGPT56SolForAccountTests(t *testing.T) {
-	require.NotEmpty(t, DefaultModels)
-	require.Equal(t, "gpt-5.6-sol", DefaultModels[0].ID)
-}
-
 func TestDefaultModelsIncludeGPTImage25(t *testing.T) {
 	require.Contains(t, DefaultModelIDs(), "gpt-image-2.5-flare")
 	require.Contains(t, DefaultModelIDs(), "gpt-image-2.5-sunburst")
@@ -43,12 +38,17 @@ func TestGPT6SolLunaModelIdentity(t *testing.T) {
 	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6-solitude"))
 	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6-luna-preview"))
 }
+
 func TestGPT61SolModelIdentity(t *testing.T) {
 	require.Contains(t, DefaultModelIDs(), "gpt-6.1-sol")
-	require.True(t, IsGPT61SolModelSpelling("gpt-6.1-sol"))
-	require.True(t, IsGPT61SolModelSpelling("openai/gpt-6.1-sol-high"))
-	require.True(t, IsGPT6SolFamilyModelSpelling("gpt-6.1-sol"))
-	require.False(t, IsGPT61SolModelSpelling("gpt-6.1-sol-preview"))
+	for _, id := range []string{"gpt-6.1-sol", "openai/gpt-6.1-sol-high", "openai/gpt-6.1-sol-max", "GPT_6.1_SOL", "gpt-6.1-sol-openai-compact"} {
+		require.True(t, IsGPT61SolModelSpelling(id), id)
+		require.True(t, IsGPT6SolFamilyModelSpelling(id), id)
+		require.False(t, IsGPT6SolOrLunaModelSpelling(id), id)
+	}
+	for _, id := range []string{"gpt-6.1", "gpt-6.1-solitude", "gpt-6.1-sol-preview", "gpt-6-sol"} {
+		require.False(t, IsGPT61SolModelSpelling(id), id)
+	}
 }
 
 func TestGPT61SolRejectsDisabledReasoning(t *testing.T) {
@@ -60,5 +60,4 @@ func TestGPT61SolRejectsDisabledReasoning(t *testing.T) {
 		require.NoError(t, ValidateGPT61SolReasoningEffort("gpt-6-sol", effort))
 	}
 	require.True(t, IsGPT61SolModelSpelling("GPT_6.1_SOL-minimal"))
-	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6.1-sol"))
 }

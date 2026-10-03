@@ -317,6 +317,12 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 
 	claudeOpus5 := newConfiguredCodexModelDescriptor("claude-opus-5")
 	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, effortsFromConfiguredCodexLevels(claudeOpus5.SupportedReasoningLevels))
+	claudeSonnet55 := newConfiguredCodexModelDescriptor("anthropic/claude-sonnet-5-5")
+	require.Equal(t, "Claude Sonnet 5.5", claudeSonnet55.DisplayName)
+	require.Equal(t, int64(1_000_000), claudeSonnet55.ContextWindow)
+	require.Equal(t, int64(1_000_000), claudeSonnet55.MaxContextWindow)
+	require.Equal(t, "high", *claudeSonnet55.DefaultReasoningLevel)
+	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, effortsFromConfiguredCodexLevels(claudeSonnet55.SupportedReasoningLevels))
 
 	providerQualifiedClaude := newConfiguredCodexModelDescriptor("anthropic/claude-sonnet-4-6")
 	require.Equal(t, "Claude Sonnet 4.6", providerQualifiedClaude.DisplayName)
@@ -3796,6 +3802,13 @@ func TestGPT61SolCatalogAdvertisesOfficialReasoningAndToolMode(t *testing.T) {
 	require.JSONEq(t, `true`, string(model["prefer_websockets"]))
 	require.JSONEq(t, `272000`, string(model["context_window"]))
 	require.JSONEq(t, `872000`, string(model["max_context_window"]))
+	require.JSONEq(t, `"xhigh"`, string(model["multi_agent_reasoning_effort"]))
+	require.JSONEq(t, `"v2"`, string(model["multi_agent_version"]))
+	var tiers []configuredCodexServiceTier
+	require.NoError(t, json.Unmarshal(model["service_tiers"], &tiers))
+	for _, tier := range tiers {
+		require.NotEqual(t, OpenAIFastTierUltrafast, tier.ID)
+	}
 	var levels []configuredCodexReasoningLevel
 	require.NoError(t, json.Unmarshal(model["supported_reasoning_levels"], &levels))
 	efforts := make([]string, 0, len(levels))
@@ -3823,5 +3836,27 @@ func TestGPT61SolAPIKeyCatalogDoesNotEnableOAuthLite(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &catalog))
 		require.JSONEq(t, `false`, string(catalog.Models[0]["use_responses_lite"]))
 		require.JSONEq(t, `"low"`, string(catalog.Models[0]["default_reasoning_level"]))
+	}
+}
+
+func TestAstraUltrafastCatalogUsesAccountCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		accountType, base, model string
+		want                     bool
+	}{
+		{AccountTypeAPIKey, "https://api.openai.com", "gpt-6-astra", true},
+		{AccountTypeAPIKey, "https://api.openai.com", "gpt-6.1-sol", false},
+		{AccountTypeAPIKey, "https://proxy.example", "gpt-6-astra", false},
+		{AccountTypeOAuth, "https://chatgpt.com", "gpt-6-astra", false},
+	} {
+		account := &Account{Platform: PlatformOpenAI, Type: tc.accountType, Credentials: map[string]any{"base_url": tc.base, "plan_type": "promax"}}
+		caps := accountCodexToolCapabilities(account, tc.model)
+		require.Equal(t, tc.want, bytes.Contains(caps["service_tiers"], []byte("ultrafast")))
+	}
+	// Explicit native null/empty fields and account-provided tiers remain authoritative.
+	for _, raw := range []string{"null", "[]", `[{"id":"ultrafast","name":"Ultrafast"}]`} {
+		dst := map[string]json.RawMessage{"service_tiers": json.RawMessage(raw)}
+		require.False(t, applyCodexToolCapabilities(dst, map[string]json.RawMessage{"service_tiers": json.RawMessage(`[{"id":"priority"}]`)}, false))
+		require.JSONEq(t, raw, string(dst["service_tiers"]))
 	}
 }

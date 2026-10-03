@@ -72,6 +72,50 @@ cd backend && golangci-lint run ./...
 cd frontend && pnpm install
 ```
 
+### 上游同步：sub2api v0.2.13
+
+同步基线：[Wei-Shaw/sub2api v0.2.13](https://github.com/Wei-Shaw/sub2api/releases/tag/v0.2.13)，
+目标提交 `3040209f205472038c1ba745a1bedd2edd9053b1`。保留本项目模块路径、
+镜像地址和 `1.1.6` 版本标识，不将上游版本号当成本项目发布号。
+
+- 接入 TypeSafe/Jev 原生 System One、充值赠送/折扣阶梯、Claude 配额重置、
+  余额在途预留、API Key 创建限制与分组排序、模型归属检查、邮件验证码原子消费、
+  公共订单验证限速、风险用户白名单及用量/消费趋势。
+- 保留 OpenAI BPS、Codex 票据/诊断、请求时区、GPT-6.1 Sol 原生描述与推理约束、
+  OAuth 刷新和压缩、Claude 原始用户指纹、按分组选中的文件请求审计、
+  托管 Responses Web Search，以及计费任务满队列同步兜底。
+- 软删除 API Key 仍更新保留行的计数，但不恢复凭据或状态；物理不存在的 Key
+  跳过其计数，不回滚已经接受请求的用户余额/订阅结算。数据库错误仍回滚。
+- 新 TypeSafe 约束迁移使用 `247_add_typesafe_platform.sql`，在本地已有
+  `245_openai_bps_platform.sql` 之后执行，约束同时包含 `openai_bps` 和 `typesafe`。
+  不改历史迁移校验和；新增充值迁移按完整文件名独立记录。
+- 自动合并的模型目录、价格表和客户端配置可能产生重复项；合并时必须去重，
+  并保留调用方显式值优先、API key 与 OAuth/Lite 分离等本地契约。
+- TypeSafe → OpenAI BPS 切换时必须重置账号类型为 OAuth，不能遗留 TypeSafe 的
+  API Key 必填表单；BPS 的风险确认与保存后测试流程保持不变。
+- 含真实 token 的 cyber 拒绝请求也会计费；必须在启动异步计费前取得余额预留引用，
+  HTTP 使用请求 context，WS 使用当前有效的预留 context，提交结束后才归还。
+  仅记录风控事件而不计费时不额外持有余额预留。
+- 预留开启时 Redis 同步扣减出错，改为同步失效余额缓存，再从已提交的 DB 余额重载；
+  不异步重扣，避免预留提前释放及“已执行但返回错误”造成的重复扣减。
+  Redis 失效操作也失败时仍遵循原有告警/fail-open 策略，不宣称故障期间可严格防超支。
+- System One 接入同一按分组选中的文件审计，使用 `typesafe_systemone` 协议；
+  保留原生 state/questions、回答、用量及数值精度，不虚构聊天角色；管理端支持对应协议过滤。
+- 默认/各认证来源的平台配额矩阵与清洗均复用后端支持的完整平台集合，
+  保存无关设置不能删除 BPS、TypeSafe 或国产供应商的既有值；`0` 与 `null` 保持不同语义。
+- 账号优先级快捷编辑不增加后端没有的 `1..9999` 限制，保留旧值和一步增减；
+  Claude 不可逆重置请求使用与 Codex 重置一致的 90 秒客户端超时。
+- 充值优惠阶梯的编辑与提交复用同一错误校验；可见的重复阈值或非法比例会阻止保存，
+  不静默删行。无错误的未完成行仍按原约定在提交时省略。
+- key08 部署使用本地构建的 Linux/嵌入前端产物，备份后只替换既有 Docker 容器内应用文件，
+  只重启应用容器；不在服务端编译、不执行 `docker build`、不重建镜像，
+  不重启 PostgreSQL/Redis 或改变数据卷。未提交源码须标明本地基线、上游及 source-tree 指纹。
+
+本地验证边界：原生 System One 与 Codex session 检查使用 loopback 上游；
+浏览器使用隔离 API fixtures，不能据此声称线上配置保存或真实上游验收通过。
+无 Docker 时不把仓库 PostgreSQL/Redis 集成套件的跳过记为通过；新增平台与充值
+迁移可在隔离 PostgreSQL 引擎中验证存量行保留、约束和重复执行。
+
 ### OpenAI / Codex 协议兼容性
 
 公共 OpenAI API（API key）与 ChatGPT Codex 后端（OAuth/PAT）不是同一契约。

@@ -49,6 +49,7 @@ const (
 	PlatformZhipu      = domain.PlatformZhipu
 	PlatformDeepseek   = domain.PlatformDeepseek
 	PlatformMiniMax    = domain.PlatformMiniMax
+	PlatformTypeSafe   = domain.PlatformTypeSafe
 	PlatformOpenCodeGo = domain.PlatformOpenCodeGo
 	PlatformComposite  = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
@@ -137,6 +138,7 @@ var AllowedQuotaPlatforms = []string{
 	PlatformDeepseek,
 	PlatformMiniMax,
 	PlatformOpenCodeGo,
+	PlatformTypeSafe,
 }
 
 // AllowedSchedulingThresholdPlatforms 是允许设置账号自动停调阈值的平台列表。
@@ -244,6 +246,7 @@ const (
 	SettingKeyUserRequestAuditRetentionDays       = "user_request_audit_retention_days" // 用户请求审计保留天数
 	SettingKeyUserRequestAuditGroupIDs            = "user_request_audit_group_ids"      // 用户请求审计启用的分组 ID JSON 数组，空数组默认不记录
 	SettingKeyCyberSessionBlockEnabled            = "cyber_session_block_enabled"       // cyber 命中后会话级自动屏蔽总开关(默认关)
+	SettingKeyCyberPolicyUserAllowlist            = "cyber_policy_user_allowlist"       // Platform user IDs with log-only cyber handling
 	SettingKeyCyberSessionBlockTTLSeconds         = "cyber_session_block_ttl_seconds"   // 会话屏蔽 TTL 秒数(默认 3600)
 	SettingKeyLoginAgreementEnabled               = "login_agreement_enabled"           // 登录前是否要求同意条款
 	SettingKeyLoginAgreementMode                  = "login_agreement_mode"              // 条款确认展示模式：modal / checkbox

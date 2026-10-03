@@ -714,11 +714,14 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 })
 
 describe('CreateAccountModal OpenAI BPS', () => {
-  it('saves the token and opens the connection tester for the saved account', async () => {
+  it('switches from TypeSafe to BPS without an unrelated API-key requirement and opens the saved connection tester', async () => {
     const saved = { id: 42, platform: 'openai_bps', type: 'oauth' }
     createAccountMock.mockReset().mockResolvedValue(saved)
     const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'TypeSafe / Jev')
+    expect(wrapper.find('input[placeholder="ts-..."]').exists()).toBe(true)
     await selectButtonByText(wrapper, 'OpenAI BPS')
+    expect(wrapper.find('input[placeholder="sk-ant-..."]').exists()).toBe(false)
     await wrapper.get('form#create-account-form input[type="text"]').setValue('BPS account')
     await wrapper.get('#bps-access-token').setValue('test-token')
     await wrapper.get('#bps-account-id').setValue('workspace')

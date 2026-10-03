@@ -398,6 +398,16 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	if !bpsBoundAccountAllowed(ctx, account) {
 		return "bps_account_binding"
 	}
+	// account_model composite routes publish an alias that only accounts with an
+	// explicit model mapping own. Both scheduler modes (advanced and legacy) must
+	// enforce ownership before any priority/sticky/transport consideration; a
+	// non-owner would forward the raw public alias and get model_not_found or
+	// hit an unrelated same-name upstream model.
+	if source, ok := CompositeRouteSourceFromContext(ctx); ok && source == CompositeRouteSourceAccount {
+		if publicModel, modelOK := RequestedPublicModelFromContext(ctx); modelOK && !explicitModelMappingClaims(*account, publicModel) {
+			return "account_model_not_owned"
+		}
+	}
 	if account.Platform != platform || !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}

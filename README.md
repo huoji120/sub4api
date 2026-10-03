@@ -80,6 +80,24 @@ Accept-Language: en-US,en;q=0.9
 
 **使用方式：** 随 OpenAI 账号的请求转发自动处理，无需额外配置。
 
+## TypeSafe / Jev 支持
+
+可创建 TypeSafe API Key 账号，默认上游为 `https://api.typesafe.ai`，
+使用原生非流式接口 `POST /v1/systemone`，模型为 `jev-latest`。
+支持 `noul`、`choice`、`score` 问题类型，保留原生请求、回答和上游扩展字段。
+该平台不兼容 Chat Completions、Responses、Anthropic Messages 或流式请求。
+
+```bash
+curl https://your-sub4api.example.com/v1/systemone \
+  -H 'Authorization: Bearer sk-your-sub4api-key' \
+  -H 'Content-Type: application/json' \
+  --data '{"model":"jev-latest","state":"Text to evaluate","questions":{"safety":{"type":"noul","instructions":"Evaluate whether the text is unsafe"}}}'
+```
+
+回退价格为每百万输入 token `$0.042`，输出 token `$0`，可由渠道定价覆盖。
+官方 TypeSafe 域名的上游计费自动探测直接记录为不支持，不向不存在的计费端点发送 Key。
+自定义中转地址仍可使用上游计费探测。OpenAI BPS 等现有平台不受此新增平台替换。
+
 ## 部署与切换
 
 Docker 镜像统一使用 `macosdo/sub4api:latest`。为沿用现有部署配置，Compose 服务名和 Linux 安装脚本的 systemd 服务名仍为 `sub2api`。

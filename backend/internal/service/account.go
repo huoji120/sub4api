@@ -2495,8 +2495,8 @@ func (a *Account) GetUserMsgQueueMode() string {
 
 // IsSessionIDMaskingEnabled 检查是否启用会话ID伪装
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
-// 启用后将在一段时间内（15分钟）固定 metadata.user_id 中的 session ID，
-// 使上游认为请求来自同一个会话
+// 启用后按账号命名空间重映射会话 ID，保留独立会话与父子关联；
+// 账号连续15分钟无请求后更新命名空间。
 func (a *Account) IsSessionIDMaskingEnabled() bool {
 	if !a.IsAnthropicOAuthOrSetupToken() {
 		return false

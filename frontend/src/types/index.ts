@@ -1314,7 +1314,7 @@ export interface Account {
   tls_fingerprint_profile_id?: number | null
 
   // 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
-  // 启用后将在15分钟内固定 metadata.user_id 中的 session ID
+  // 按账号命名空间重映射，保留独立会话与父子关联；闲置15分钟后更新命名空间
   session_id_masking_enabled?: boolean | null
 
   // 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）

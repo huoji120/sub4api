@@ -110,6 +110,16 @@ cd frontend && pnpm install
 - key08 部署使用本地构建的 Linux/嵌入前端产物，备份后只替换既有 Docker 容器内应用文件，
   只重启应用容器；不在服务端编译、不执行 `docker build`、不重建镜像，
   不重启 PostgreSQL/Redis 或改变数据卷。未提交源码须标明本地基线、上游及 source-tree 指纹。
+- 自定义版本禁止控制台自更新：侧栏版本仅展示当前服务版本，不检查 GitHub 发布，
+  不提供更新、回退、下载安装命令或页面重启按钮。保留本地只读 `/admin/system/version`。
+- 旧浏览器调用 `/admin/system/check-updates`、`rollback-versions`、`update`、`rollback`
+  或 `restart` 时，在管理员认证后统一返回 HTTP 410 / `SELF_UPDATE_DISABLED`；
+  不复用旧操作的幂等成功结果，不下载或替换二进制，不触发进程退出。
+- 恢复误更新时先区分 Docker 镜像、磁盘二进制和 `/proc/1/exe`：更新器可能已覆盖磁盘
+  文件但尚未重启，不能把控制台版本号当作磁盘或镜像证明。先备份误装文件，再恢复已验证
+  自定义产物；最终重启后同时核对运行中进程与磁盘 SHA-256、健康状态和嵌入前端。
+  PID1 使用 UID 1000 时，以 `docker exec --user 1000:1000` 读取 `/proc/1/exe`，无需放宽权限。
+  Claude/Codex 客户端版本同步仍保留，与已移除的应用自更新不是同一功能。
 
 本地验证边界：原生 System One 与 Codex session 检查使用 loopback 上游；
 浏览器使用隔离 API fixtures，不能据此声称线上配置保存或真实上游验收通过。
@@ -198,21 +208,26 @@ go test -tags=unit ./internal/service ./internal/handler ./internal/pkg/apicompa
 
 ### Claude Code / Anthropic 转发兼容性
 
-Claude Code 2.1.283 的转发基线应优先保证协议语义，而不是逐字节仿冒：
+以提供的 Claude Code 2.1.283 请求构造为对照，保持字段条件、值与会话关联一致，不凭空合成未观测的遥测或控制状态：
 
 - Anthropic SSE 必须按空行聚合；多条 `data:` 用换行拼接；流内错误使用 `event: error`；不完整 `message_stop` 不能提前视为终止。
 - OAuth 请求只改写明确需要隔离的身份字段；`metadata.user_id` 的 `parent_session_id`、`tk` 和未来扩展字段必须保留。真实存在的 Claude Code agent/request 头可以透传，但不得无条件合成。
 - `messages` 与 `count_tokens` 必须保持客户端识别、beta、system 和 provider 路由一致。Vertex service-account 的计数请求走 Vertex Anthropic `count-tokens:rawPredict`。
 - `ProxyID`、`custom_base_url`、Vertex/Bedrock/provider 配置是实际出口选择，必须保留账户级自定义地域和代理；不得用伪造 IP、地区头、遥测或机器标识规避上游策略。
 - 不自动转发 Claude Code 产品遥测，不把代理自己的 user/device ID 注入上游；模型请求上下文、产品遥测和可选 OTEL 详细记录是三条不同数据路径。
-- 真实 Claude Code 的 billing attribution 保留客户端版本和后缀，不再按账号缓存 UA 重算。该保留规则不关闭其他 metadata/fingerprint 设置。
+- OAuth 出站 billing 的 `cc_version` 与所选上游 UA 同源：mimic 使用兼容 UA；真实 CC 在指纹统一开启时使用账号 CC 指纹，否则使用客户端 UA。已识别的 fingerprint 后缀按原始 user 文本及所选版本重算；缺失 billing block 时保留现有补齐策略。
 - OAuth mimic 指纹按 JavaScript UTF-16 下标采样；在 system 迁移前保存原始 user 文本，重试/出站同步仍使用该文本，避免把代理插入的指令当作用户消息。mimic 保留 `cch=00000`。
 - mimic 默认运行环境取自本机 Node 实测：`Windows / x64 / node / v22.19.0`，SDK 版本为提取包中的 `0.112.1`。这是固定兼容配置，不代表部署服务器实际运行 Node；已有账号指纹缓存不自动清空。
+- 账号指纹只接受合法 `claude-cli` UA；非 CC 调用不能写入自身的 Stainless 环境字段。存量非 CC/非法 UA 缓存按完整兼容配置自愈，保留稳定 ClientID；有效账号画像仍按既有版本升级策略更新，不改成逐请求漂移。
+- 真实 CC 与 mimic 均保留调用方已提供的 `anthropic-usage-limit`、`x-claude-code-prev-tool-durations`、`x-claude-code-context-compacted`、`x-cc-context-compacted`、`x-claude-code-compaction`、`x-cc-compaction-request`，保留多值和显式空值；不无条件生成这六个头。
+- Anthropic OAuth/setup-token 上游响应实际提供这六个字段时，按上游账号写入 Redis header 缓存；部分更新只覆盖出现的字段，缺失字段保留，显式空值覆盖旧值。缓存在最后一次更新七天后过期；认证及其他响应头不进入缓存。
+- 仅 mimic 请求从最新缓存补齐调用方未提供的字段，调用方显式值优先；真实客户端透传不被缓存补齐。native messages/count_tokens、Chat/Responses 转接及内部重试统一观察响应；缓存失败不改写上游响应、错误状态或 SSE。
+- session masking 使用账号级随机命名空间，将原始 session 与 parent session 按同一规则映射，保留独立会话、父子关联、未知 metadata 扩展及 body/header 会话一致性。命名空间连续十五分钟无请求后更新；Redis 原子选择并发创建的唯一 seed，旧固定会话缓存不再读取。
 
 本地回归：
 
 ```bash
-go test -tags=unit ./internal/service ./internal/handler ./internal/repository ./internal/pkg/claude ./internal/pkg/anthropicfp -run 'Test(.*(Claude|Anthropic|Gateway|Metadata|Identity|Streaming|Passthrough|CountTokens|OAuth|Cache|Beta|Thinking|Tool|SSE|HTTPUpstream|CLIVersion|Billing).*)' -count=1
+go test -tags=unit ./internal/service ./internal/handler ./internal/repository ./internal/pkg/claude ./internal/pkg/anthropicfp -run 'Test(.*(Claude|Anthropic|Gateway|Metadata|Identity|Fingerprint|SessionMask|Streaming|Passthrough|CountTokens|OAuth|Cache|Beta|Thinking|Tool|SSE|HTTPUpstream|CLIVersion|Billing).*)' -count=1
 ```
 
 ## 四、常见坑点 & 解决方案

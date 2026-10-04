@@ -1171,7 +1171,7 @@ export default {
         },
         sessionIdMasking: {
           label: 'Session ID Masking',
-          hint: 'When enabled, fixes the session ID in metadata.user_id for 15 minutes, making upstream think requests come from the same session'
+          hint: 'Remaps session IDs within an account namespace while preserving distinct sessions and parent-child links. The namespace renews after 15 minutes without requests.'
         },
         cacheTTLOverride: {
           label: 'Cache TTL Override',

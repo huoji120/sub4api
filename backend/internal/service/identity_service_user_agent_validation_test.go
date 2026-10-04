@@ -34,11 +34,19 @@ func (s *stubIdentityCache) SetFingerprint(_ context.Context, _ int64, fp *Finge
 	return nil
 }
 
-func (s *stubIdentityCache) GetMaskedSessionID(_ context.Context, _ int64) (string, error) {
+func (s *stubIdentityCache) GetSessionMaskSeed(_ context.Context, _ int64) (string, error) {
 	return "", nil
 }
 
-func (s *stubIdentityCache) SetMaskedSessionID(_ context.Context, _ int64, _ string) error {
+func (s *stubIdentityCache) GetOrCreateSessionMaskSeed(_ context.Context, _ int64, candidate string) (string, error) {
+	return candidate, nil
+}
+
+func (s *stubIdentityCache) GetClaudeCodeHeaders(_ context.Context, _ int64) (http.Header, error) {
+	return nil, nil
+}
+
+func (s *stubIdentityCache) UpdateClaudeCodeHeaders(_ context.Context, _ int64, _ http.Header) error {
 	return nil
 }
 
@@ -59,7 +67,9 @@ func TestIsAcceptableFingerprintUserAgent(t *testing.T) {
 		{"official_cli", "claude-cli/2.1.220 (external, cli)", true},
 		{"official_cli_no_meta", "claude-cli/2.1.220", true},
 		{"next_major_still_allowed", "claude-cli/4.0.0 (external, cli)", true},
-		{"other_product_valid_form", "some-sdk/1.2.3 (node)", true},
+		{"other_product_valid_form", "some-sdk/1.2.3 (node)", false},
+		{"curl_valid_form", "curl/8.10.1", false},
+		{"opencode_valid_form", "opencode/1.2.3", false},
 
 		// 本地/开发构建：版本号后带后缀，正是 #5254 的毒化 UA 形态。
 		{"local_build_suffix", "claude-cli/999.0.0-local (undefined, cli)", false},
@@ -236,4 +246,73 @@ func TestGetOrCreateFingerprintMissingUserAgentKeepsDefault(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, defaultFingerprint().UserAgent, fp.UserAgent)
+}
+
+func TestGetOrCreateFingerprintNonClaudeClientCannotSupplyProfile(t *testing.T) {
+	ctx := context.Background()
+	trusted, err := NewIdentityService(&stubIdentityCache{}).GetOrCreateFingerprint(ctx, 1, nil)
+	require.NoError(t, err)
+	for _, ua := range []string{"curl/8.10.1", "opencode/1.2.3"} {
+		t.Run(ua, func(t *testing.T) {
+			headers := headersWithUA(ua)
+			headers.Set("X-Stainless-Lang", "python")
+			headers.Set("X-Stainless-Package-Version", "0.0.1")
+			headers.Set("X-Stainless-OS", "OtherOS")
+			headers.Set("X-Stainless-Arch", "other-arch")
+			headers.Set("X-Stainless-Runtime", "other-runtime")
+			headers.Set("X-Stainless-Runtime-Version", "0.0.1")
+			cache := &stubIdentityCache{}
+			svc := NewIdentityService(cache)
+			fresh, err := svc.GetOrCreateFingerprint(ctx, 1, headers)
+			require.NoError(t, err)
+			cached := *fresh
+			cached.UserAgent = ua
+			cached.StainlessOS = "polluted-os"
+			cached.StainlessRuntime = "polluted-runtime"
+			cache.fingerprint = &cached
+			healed, err := svc.GetOrCreateFingerprint(ctx, 1, headers)
+			require.NoError(t, err)
+			require.Equal(t, fresh.ClientID, healed.ClientID)
+			for _, fp := range []*Fingerprint{fresh, healed} {
+				req, err := http.NewRequest(http.MethodPost, "https://example.invalid", nil)
+				require.NoError(t, err)
+				svc.ApplyFingerprint(req, fp)
+				trustedReq, err := http.NewRequest(http.MethodPost, "https://example.invalid", nil)
+				require.NoError(t, err)
+				svc.ApplyFingerprint(trustedReq, trusted)
+				require.Equal(t, trustedReq.Header, req.Header)
+			}
+		})
+	}
+}
+
+func TestGetOrCreateFingerprintHealsCurlCacheWithCurrentClaudeProfile(t *testing.T) {
+	cache := &stubIdentityCache{fingerprint: &Fingerprint{
+		ClientID: "stable-device", UserAgent: "curl/8.10.1",
+		StainlessOS: "polluted-os", StainlessRuntime: "polluted-runtime",
+	}}
+	svc := NewIdentityService(cache)
+	headers := headersWithUA("claude-cli/2.9.0 (external, cli)")
+	headers.Set("X-Stainless-OS", "Linux")
+	headers.Set("X-Stainless-Runtime-Version", "v24.0.0")
+	fp, err := svc.GetOrCreateFingerprint(context.Background(), 1, headers)
+	require.NoError(t, err)
+	require.Equal(t, "stable-device", fp.ClientID)
+	require.Equal(t, headers.Get("User-Agent"), fp.UserAgent)
+	require.Equal(t, "Linux", fp.StainlessOS)
+	require.Equal(t, "v24.0.0", fp.StainlessRuntimeVersion)
+	require.NotEqual(t, "polluted-runtime", fp.StainlessRuntime)
+	// Same-version requests cannot silently change the account-level runtime profile.
+	headers.Set("X-Stainless-OS", "Windows")
+	headers.Set("X-Stainless-Runtime-Version", "v22.0.0")
+	repeated, err := svc.GetOrCreateFingerprint(context.Background(), 1, headers)
+	require.NoError(t, err)
+	require.Equal(t, fp, repeated)
+	headers.Set("User-Agent", "claude-cli/2.9.1 (external, cli)")
+	upgraded, err := svc.GetOrCreateFingerprint(context.Background(), 1, headers)
+	require.NoError(t, err)
+	require.Equal(t, "stable-device", upgraded.ClientID)
+	require.Equal(t, "Windows", upgraded.StainlessOS)
+	require.Equal(t, "v22.0.0", upgraded.StainlessRuntimeVersion)
+	require.Equal(t, headers.Get("User-Agent"), upgraded.UserAgent)
 }

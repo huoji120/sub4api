@@ -17,47 +17,6 @@ export default {
     unlimited: 'Unlimited'
   },
 
-  // Version Badge
-  version: {
-    currentVersion: 'Current Version',
-    latestVersion: 'Latest Version',
-    upToDate: "You're running the latest version.",
-    updateAvailable: 'A new version is available!',
-    releaseNotes: 'Release Notes',
-    noReleaseNotes: 'No release notes',
-    viewUpdate: 'View Update',
-    viewRelease: 'View Release',
-    viewChangelog: 'View Changelog',
-    refresh: 'Refresh',
-    sourceMode: 'Source Build',
-    sourceModeHint: 'Source build, use git pull to update',
-    updateNow: 'Update Now',
-    updating: 'Updating...',
-    updateComplete: 'Update Complete',
-    updateFailed: 'Update Failed',
-    restartRequired: 'Please restart the service to apply the update',
-    restartNow: 'Restart Now',
-    restarting: 'Restarting...',
-    retry: 'Retry',
-    rollback: 'Version Rollback',
-    rollbackSelectVersion: 'Select a version to roll back to (last 3 versions)',
-    rollbackConfirm: 'Roll back to {version}',
-    rollbackWarning:
-      'Rollback downloads the selected version and replaces the current binary. A service restart is required afterwards.',
-    rollingBack: 'Rolling back...',
-    rollbackComplete: 'Rollback Complete',
-    rollbackFailed: 'Rollback Failed',
-    manualRollbackCommand: 'Manual rollback',
-    copyCommand: 'Copy',
-    copied: 'Copied',
-    noRollbackVersions: 'No versions available for rollback',
-    loadVersionsFailed: 'Failed to load versions',
-    rollbackSourceHint: 'Online rollback is not available for source builds',
-    deployScript: 'Script',
-    deployDocker: 'Docker',
-    dockerEditCompose: 'Edit the image tag in docker-compose.yml',
-    dockerRecreate: 'Recreate the container'
-  },
 
   // Recharge / Subscription Page
   purchase: {

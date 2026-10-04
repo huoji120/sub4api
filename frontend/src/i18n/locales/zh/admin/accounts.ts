@@ -1273,7 +1273,7 @@ export default {
         },
         sessionIdMasking: {
           label: '会话 ID 伪装',
-          hint: '启用后将在 15 分钟内固定 metadata.user_id 中的 session ID，使上游认为请求来自同一会话'
+          hint: '启用后按账号命名空间重映射会话 ID，保留独立会话和父子关联；连续 15 分钟无请求后更新命名空间'
         },
         cacheTTLOverride: {
           label: '缓存 TTL 强制替换',

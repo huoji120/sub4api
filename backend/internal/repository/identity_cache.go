@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	fingerprintKeyPrefix   = "fingerprint:"
-	fingerprintTTL         = 7 * 24 * time.Hour // 7天，配合每24小时懒续期可保持活跃账号永不过期
-	maskedSessionKeyPrefix = "masked_session:"
-	maskedSessionTTL       = 15 * time.Minute
+	fingerprintKeyPrefix     = "fingerprint:"
+	fingerprintTTL           = 7 * 24 * time.Hour // 7天，配合每24小时懒续期可保持活跃账号永不过期
+	sessionMaskSeedKeyPrefix = "session_mask_seed:"
+	sessionMaskSeedTTL       = 15 * time.Minute
 )
 
 // fingerprintKey generates the Redis key for account fingerprint cache.
@@ -22,9 +22,9 @@ func fingerprintKey(accountID int64) string {
 	return fmt.Sprintf("%s%d", fingerprintKeyPrefix, accountID)
 }
 
-// maskedSessionKey generates the Redis key for masked session ID cache.
-func maskedSessionKey(accountID int64) string {
-	return fmt.Sprintf("%s%d", maskedSessionKeyPrefix, accountID)
+// sessionMaskSeedKey isolates namespace seeds from obsolete fixed session IDs.
+func sessionMaskSeedKey(accountID int64) string {
+	return fmt.Sprintf("%s%d", sessionMaskSeedKeyPrefix, accountID)
 }
 
 type identityCache struct {
@@ -57,9 +57,8 @@ func (c *identityCache) SetFingerprint(ctx context.Context, accountID int64, fp 
 	return c.rdb.Set(ctx, key, val, fingerprintTTL).Err()
 }
 
-func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64) (string, error) {
-	key := maskedSessionKey(accountID)
-	val, err := c.rdb.Get(ctx, key).Result()
+func (c *identityCache) GetSessionMaskSeed(ctx context.Context, accountID int64) (string, error) {
+	val, err := c.rdb.Get(ctx, sessionMaskSeedKey(accountID)).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return "", nil
@@ -69,7 +68,20 @@ func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64)
 	return val, nil
 }
 
-func (c *identityCache) SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error {
-	key := maskedSessionKey(accountID)
-	return c.rdb.Set(ctx, key, sessionID, maskedSessionTTL).Err()
+var getOrCreateSessionMaskSeedScript = redis.NewScript(`
+local seed = redis.call('GET', KEYS[1])
+if not seed then
+  if ARGV[1] == '' then
+    return ''
+  end
+  seed = ARGV[1]
+  redis.call('SET', KEYS[1], seed, 'PX', ARGV[2])
+else
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return seed
+`)
+
+func (c *identityCache) GetOrCreateSessionMaskSeed(ctx context.Context, accountID int64, candidate string) (string, error) {
+	return getOrCreateSessionMaskSeedScript.Run(ctx, c.rdb, []string{sessionMaskSeedKey(accountID)}, candidate, sessionMaskSeedTTL.Milliseconds()).Text()
 }

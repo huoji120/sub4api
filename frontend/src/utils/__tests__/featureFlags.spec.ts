@@ -4,9 +4,6 @@ import { useAppStore } from '@/stores/app'
 import { FeatureFlags, isFeatureFlagEnabled, makeSidebarFlag, resolveFeatureFlag } from '@/utils/featureFlags'
 import type { PublicSettings } from '@/types'
 
-vi.mock('@/api/admin/system', () => ({
-  checkUpdates: vi.fn(),
-}))
 
 vi.mock('@/api/auth', () => ({
   getPublicSettings: vi.fn(),
